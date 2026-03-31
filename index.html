@@ -909,7 +909,20 @@ const STORAGE_KEYS = {
   dashboard: 'espen_dashboard',
 };
 
-const API_BASE = window.ESPEN_API_BASE || 'http://127.0.0.1:8001/api';
+const API_BASE = (() => {
+  if (window.ESPEN_API_BASE) {
+    return String(window.ESPEN_API_BASE).replace(/\/+$/, '');
+  }
+
+  const host = window.location.hostname;
+  const isLocalHost = host === '127.0.0.1' || host === 'localhost';
+
+  if (isLocalHost) {
+    return 'http://127.0.0.1:8001/api';
+  }
+
+  return `${window.location.origin}/api`;
+})();
 const AUTH_TOKEN_KEY = 'espen_api_token';
 let authToken = localStorage.getItem(AUTH_TOKEN_KEY) || '';
 const remoteCache = {};
