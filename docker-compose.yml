@@ -1,0 +1,14 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: espen
+      POSTGRES_USER: espen
+      POSTGRES_PASSWORD: espen
+    ports:
+      - "5433:5432"
+    volumes:
+      - espen_pg_data:/var/lib/postgresql/data
+
+volumes:
+  espen_pg_data:
