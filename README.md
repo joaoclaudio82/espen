@@ -1,8 +1,4 @@
-# ESPEN — Sistema de Gestão por Competências
-
-**Escola Nacional de Serviços Penais (ESPEN) / SENAPPEN**  
-Sistema web para gestão da Matriz de Competências Nacional (MCN 2026) e ações educativas do sistema penal federal.
-
+![1774975498338](image/README/1774975498338.png)
 ---
 
 ## ✅ Funcionalidades Implementadas
