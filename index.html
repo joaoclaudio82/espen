@@ -165,6 +165,12 @@ html, body { height: 100%; font-family: 'Inter', sans-serif; background: var(--g
 .nav-item:hover { background: rgba(255,255,255,0.08); color: white; border-left-color: rgba(255,255,255,0.3); }
 .nav-item.active { background: rgba(255,193,7,0.15); color: var(--gold); border-left-color: var(--gold); }
 .nav-item i { width: 18px; text-align: center; font-size: 15px; }
+.nav-item-logout { color: rgba(255,255,255,0.55); }
+.nav-item-logout:hover {
+  background: rgba(220, 53, 69, 0.18);
+  color: #fecaca;
+  border-left-color: rgba(248, 113, 113, 0.7);
+}
 .sidebar-footer { padding: 16px; border-top: 1px solid rgba(255,255,255,0.1); }
 .user-card { display: flex; align-items: center; gap: 10px; }
 .user-avatar {
@@ -176,8 +182,6 @@ html, body { height: 100%; font-family: 'Inter', sans-serif; background: var(--g
 .user-info { flex: 1; min-width: 0; }
 .user-name { color: white; font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .user-role { color: rgba(255,255,255,0.45); font-size: 10px; }
-.user-logout { color: rgba(255,255,255,0.45); cursor: pointer; font-size: 14px; }
-.user-logout:hover { color: var(--gold); }
 
 /* CONTENT */
 .main-content {
@@ -196,13 +200,6 @@ html, body { height: 100%; font-family: 'Inter', sans-serif; background: var(--g
   box-shadow: 0 1px 4px rgba(0,0,0,0.06);
 }
 .topbar-title { font-size: 20px; font-weight: 700; color: var(--navy); flex: 1; min-width: 0; }
-.topbar-logout {
-  flex-shrink: 0; width: 40px; height: 40px; border: none; border-radius: 10px;
-  background: var(--gray-100); color: var(--navy); cursor: pointer;
-  display: flex; align-items: center; justify-content: center; font-size: 16px;
-  transition: var(--transition);
-}
-.topbar-logout:hover { background: var(--gray-200); color: #b91c1c; }
 .topbar-actions { display: flex; gap: 10px; align-items: center; }
 .menu-toggle {
   display: none; background: none; border: none; cursor: pointer;
@@ -302,6 +299,31 @@ html, body { height: 100%; font-family: 'Inter', sans-serif; background: var(--g
   padding: 8px;
   font-size: 13px;
   font-family: inherit;
+}
+.dashboard-acoes-checkboxes {
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1.5px solid var(--gray-200);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--gray-50);
+}
+.dashboard-acoes-checkboxes label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+  padding: 6px 4px;
+  cursor: pointer;
+  border-radius: 6px;
+}
+.dashboard-acoes-checkboxes label:hover { background: rgba(26,35,126,0.06); }
+.dashboard-acoes-checkboxes input { margin-top: 3px; flex-shrink: 0; }
+.dashboard-filter-quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
 }
 .dashboard-filter-actions { display: flex; flex-direction: column; gap: 8px; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -864,6 +886,10 @@ textarea.field-sugerido, input.field-sugerido { border-color: #e65100 !important
         <div class="nav-item" onclick="navigate('configuracoes')">
           <i class="fas fa-gear"></i><span>Configurações</span>
         </div>
+        <div class="nav-section">Sessão</div>
+        <div class="nav-item nav-item-logout" onclick="doLogout()" title="Encerrar sessão">
+          <i class="fas fa-right-from-bracket"></i><span>Sair</span>
+        </div>
       </div>
       <div class="sidebar-footer">
         <div class="user-card">
@@ -872,7 +898,6 @@ textarea.field-sugerido, input.field-sugerido { border-color: #e65100 !important
             <div class="user-name" id="user-name-sidebar">Carregando...</div>
             <div class="user-role" id="user-role-sidebar">--</div>
           </div>
-          <div class="user-logout" onclick="doLogout()" title="Sair"><i class="fas fa-right-from-bracket"></i></div>
         </div>
       </div>
     </nav>
@@ -882,7 +907,6 @@ textarea.field-sugerido, input.field-sugerido { border-color: #e65100 !important
       <div class="topbar">
         <button class="menu-toggle" onclick="toggleSidebar()"><i class="fas fa-bars"></i></button>
         <div class="topbar-title" id="topbar-title">Dashboard</div>
-        <button type="button" class="topbar-logout" onclick="doLogout()" title="Sair do sistema" aria-label="Sair"><i class="fas fa-right-from-bracket"></i></button>
         <div class="topbar-actions" id="topbar-actions"></div>
       </div>
       <div class="page-content" id="page-content">
@@ -1636,12 +1660,13 @@ function getMatrizEscopoDashboard(dashSel, acoes, matriz) {
   const ativos = (matriz || []).filter(r => !r.arquivado);
   if (dashSel.mode === 'all') return ativos;
   if (dashSel.mode === 'none') return [];
-  const set = new Set();
-  (acoes || []).filter(a => dashSel.ids.includes(a.id)).forEach(a => {
-    (a.competencias_vinculadas || []).forEach(cid => { if (cid) set.add(cid); });
+  const idSet = new Set((dashSel.ids || []).map(String));
+  const compSet = new Set();
+  (acoes || []).filter(a => idSet.has(String(a.id))).forEach(a => {
+    (a.competencias_vinculadas || []).forEach(cid => { if (cid) compSet.add(String(cid)); });
   });
-  if (set.size === 0) return [];
-  return ativos.filter(r => set.has(r.id));
+  if (compSet.size === 0) return [];
+  return ativos.filter(r => compSet.has(String(r.id)));
 }
 
 function navigate(page) {
@@ -1737,14 +1762,19 @@ window.closeModalBtn = function() {
   document.getElementById('modal-overlay').classList.remove('active');
 };
 
+function dashboardPrefMatchesUser(p, userId) {
+  const u = String(userId ?? '');
+  return String(p.user_id ?? '') === u || String(p.id ?? '') === u;
+}
+
 /** Preferências do dashboard: ausente = todas as ações; explicit_empty = painel vazio; filtrado = lista de ids. */
 function getDashboardSelection() {
   if (!currentUser?.id) return { mode: 'all', ids: [] };
   const prefs = getStorage(STORAGE_KEYS.dashboard) || [];
-  const pref = prefs.find(p => p.user_id === currentUser.id);
+  const pref = prefs.find(p => dashboardPrefMatchesUser(p, currentUser.id));
   if (!pref) return { mode: 'all', ids: [] };
   if (pref.explicit_empty) return { mode: 'none', ids: [] };
-  const ids = Array.isArray(pref.acao_ids) ? pref.acao_ids : [];
+  const ids = Array.isArray(pref.acao_ids) ? pref.acao_ids.map(String) : [];
   /* Preferências antigas: acao_ids vazio sem flag = considerar todas */
   if (ids.length === 0 && !pref.explicit_empty) return { mode: 'all', ids: [] };
   if (ids.length === 0) return { mode: 'none', ids: [] };
@@ -1753,12 +1783,13 @@ function getDashboardSelection() {
 
 function saveDashboardSelection(actionIds, opts = {}) {
   if (!currentUser?.id) return;
+  remoteCache[STORAGE_KEYS.dashboard] = null;
   const prefs = getStorage(STORAGE_KEYS.dashboard) || [];
-  const idx = prefs.findIndex(p => p.user_id === currentUser.id);
+  const idx = prefs.findIndex(p => dashboardPrefMatchesUser(p, currentUser.id));
   const record = {
     id: currentUser.id,
     user_id: currentUser.id,
-    acao_ids: actionIds,
+    acao_ids: actionIds.map(String),
     explicit_empty: !!opts.explicit_empty,
   };
   if (idx >= 0) prefs[idx] = record;
@@ -1767,9 +1798,7 @@ function saveDashboardSelection(actionIds, opts = {}) {
 }
 
 window.saveDashboardSelectionFromUI = function() {
-  const select = document.getElementById('dashboard-action-select');
-  if (!select) return;
-  const selectedIds = Array.from(select.selectedOptions).map(o => o.value);
+  const selectedIds = Array.from(document.querySelectorAll('input[name="dash-ac-filter"]:checked')).map(cb => cb.value);
   saveDashboardSelection(selectedIds, { explicit_empty: selectedIds.length === 0 });
   const msg = selectedIds.length === 0
     ? 'Filtro salvo: nenhuma ação no escopo; gráficos da matriz ficam vazios até você escolher ações ou limpar o filtro.'
@@ -1780,10 +1809,19 @@ window.saveDashboardSelectionFromUI = function() {
 
 window.clearDashboardSelection = function() {
   if (!currentUser?.id) return;
-  const prefs = (getStorage(STORAGE_KEYS.dashboard) || []).filter(p => p.user_id !== currentUser.id);
+  remoteCache[STORAGE_KEYS.dashboard] = null;
+  const prefs = (getStorage(STORAGE_KEYS.dashboard) || []).filter(p => !dashboardPrefMatchesUser(p, currentUser.id));
   setStorage(STORAGE_KEYS.dashboard, prefs);
   showToast('Filtro do dashboard resetado: todas as ações no painel.', 'info');
   renderDashboard();
+};
+
+window.dashboardMarcarTodasAcoes = function() {
+  document.querySelectorAll('input[name="dash-ac-filter"]').forEach(cb => { cb.checked = true; });
+};
+
+window.dashboardDesmarcarTodasAcoes = function() {
+  document.querySelectorAll('input[name="dash-ac-filter"]').forEach(cb => { cb.checked = false; });
 };
 
 function normalizeExcelHeader(header) {
@@ -2104,10 +2142,11 @@ function renderDashboard() {
   const users = getStorage(STORAGE_KEYS.users) || [];
   const pdis = getStorage(STORAGE_KEYS.pdi) || [];
   const dashSel = getDashboardSelection();
+  const selIdSet = new Set((dashSel.ids || []).map(String));
   const filteredAcoes = dashSel.mode === 'none'
     ? []
     : dashSel.mode === 'filtered'
-      ? acoes.filter(a => dashSel.ids.includes(a.id))
+      ? acoes.filter(a => selIdSet.has(String(a.id)))
       : acoes;
   const matrizEscopo = getMatrizEscopoDashboard(dashSel, acoes, matriz);
   const scopeHint = dashSel.mode === 'all'
@@ -2123,9 +2162,16 @@ function renderDashboard() {
       <div class="dashboard-filter-title">Filtro de ações no dashboard</div>
       <div class="dashboard-filter-grid">
         <div>
-          <select id="dashboard-action-select" multiple>
-            ${acoes.map(a => `<option value="${a.id}" ${dashSel.mode === 'filtered' && dashSel.ids.includes(a.id) ? 'selected' : ''}>${a.nome || 'Ação sem nome'}${a.codigo ? ` (${a.codigo})` : ''}</option>`).join('')}
-          </select>
+          <div class="dashboard-filter-quick">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="dashboardMarcarTodasAcoes()">Marcar todas</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="dashboardDesmarcarTodasAcoes()">Desmarcar todas</button>
+          </div>
+          <div class="dashboard-acoes-checkboxes" id="dashboard-acoes-checkboxes">
+            ${acoes.length ? acoes.map(a => {
+              const checked = dashSel.mode === 'filtered' && selIdSet.has(String(a.id));
+              return `<label><input type="checkbox" name="dash-ac-filter" value="${a.id}" ${checked ? 'checked' : ''}><span>${(a.nome || 'Ação sem nome').replace(/</g, '&lt;')}${a.codigo ? ` <span style="color:var(--gray-500);">(${String(a.codigo).replace(/</g, '')})</span>` : ''}</span></label>`;
+            }).join('') : '<p style="font-size:13px;color:var(--gray-500);margin:0;">Nenhuma ação cadastrada.</p>'}
+          </div>
           <div class="text-muted" style="margin-top:6px;">
             ${dashSel.mode === 'all' ? 'Nenhum filtro salvo: o painel lateral lista todas as ações.' : dashSel.mode === 'none' ? 'Filtro explícito: nenhuma ação no painel (use o botão Salvar com lista vazia).' : `${filteredAcoes.length} ação(ões) no painel.`}
           </div>
@@ -3896,7 +3942,9 @@ function saveUser() {
   const nome = document.getElementById('uf-nome').value.trim();
   const email = document.getElementById('uf-email').value.trim();
   const cargo = document.getElementById('uf-cargo').value;
-  const acesso = document.getElementById('uf-acesso').value;
+  const niveis = ['Usuário', 'Gestor', 'Administrador'];
+  let acesso = (document.getElementById('uf-acesso') && document.getElementById('uf-acesso').value || '').trim();
+  if (!niveis.includes(acesso)) acesso = 'Usuário';
   const senha = document.getElementById('uf-senha').value;
 
   if (!cpf || !nome || !email) { showToast('Preencha os campos obrigatórios', 'warning'); return; }
@@ -3909,7 +3957,9 @@ function saveUser() {
 
   try {
     if (id) {
-      apiRequest('PUT', `/users/${id}`, { nome, email, cargo, acesso, ...(senha ? { senha } : {}) });
+      const body = { nome, email, cargo, acesso };
+      if (senha) body.senha = senha;
+      apiRequest('PUT', `/users/${id}`, body);
     } else {
       apiRequest('POST', '/users', { cpf, nome, email, cargo, acesso, senha });
     }

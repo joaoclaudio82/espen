@@ -39,6 +39,16 @@ class UserUpdate(BaseModel):
     ativo: bool | None = None
     senha: str | None = Field(default=None, min_length=6)
 
+    @field_validator("acesso", mode="before")
+    @classmethod
+    def acesso_strip(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, str):
+            s = v.strip()
+            return s if s else None
+        return v
+
 
 class LoginRequest(BaseModel):
     cpf: str

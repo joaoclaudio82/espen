@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from ..crud import list_users, role_from_acesso, to_user_out
 from ..database import get_db
@@ -46,20 +47,23 @@ def update_user(user_id: str, payload: UserUpdate, _: User = Depends(require_adm
     if not user:
         raise HTTPException(status_code=404, detail="Usuário não encontrado")
 
-    if payload.nome is not None:
-        user.nome = payload.nome
-    if payload.email is not None:
-        user.email = payload.email
-    if payload.cargo is not None:
-        user.cargo = payload.cargo
-    if payload.acesso is not None:
-        user.role = role_from_acesso(payload.acesso)
-    if payload.ativo is not None:
-        user.ativo = payload.ativo
-    if payload.senha:
-        user.password_hash = hash_password(payload.senha)
+    # model_dump(exclude_unset=True): só campos enviados no JSON (PUT parcial seguro)
+    data = payload.model_dump(exclude_unset=True)
 
-    db.add(user)
+    if "nome" in data and data["nome"] is not None:
+        user.nome = data["nome"]
+    if "email" in data and data["email"] is not None:
+        user.email = data["email"]
+    if "cargo" in data:
+        user.cargo = data["cargo"]
+    if "ativo" in data and data["ativo"] is not None:
+        user.ativo = data["ativo"]
+    if "acesso" in data and data["acesso"] is not None:
+        user.role = role_from_acesso(data["acesso"])
+        flag_modified(user, "role")
+    if data.get("senha"):
+        user.password_hash = hash_password(data["senha"])
+
     db.commit()
     db.refresh(user)
     return to_user_out(user)
