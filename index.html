@@ -195,7 +195,14 @@ html, body { height: 100%; font-family: 'Inter', sans-serif; background: var(--g
   position: sticky; top: 0; z-index: 50;
   box-shadow: 0 1px 4px rgba(0,0,0,0.06);
 }
-.topbar-title { font-size: 20px; font-weight: 700; color: var(--navy); flex: 1; }
+.topbar-title { font-size: 20px; font-weight: 700; color: var(--navy); flex: 1; min-width: 0; }
+.topbar-logout {
+  flex-shrink: 0; width: 40px; height: 40px; border: none; border-radius: 10px;
+  background: var(--gray-100); color: var(--navy); cursor: pointer;
+  display: flex; align-items: center; justify-content: center; font-size: 16px;
+  transition: var(--transition);
+}
+.topbar-logout:hover { background: var(--gray-200); color: #b91c1c; }
 .topbar-actions { display: flex; gap: 10px; align-items: center; }
 .menu-toggle {
   display: none; background: none; border: none; cursor: pointer;
@@ -351,6 +358,10 @@ tbody td { padding: 12px 16px; color: var(--gray-800); }
 }
 .modal-overlay.active .modal { transform: scale(1); }
 .modal.modal-lg { max-width: 900px; }
+.modal.modal-lg .modal-body {
+  max-height: min(calc(90vh - 200px), 720px);
+  overflow-y: auto;
+}
 .modal-header {
   padding: 24px 28px; border-bottom: 1px solid var(--gray-200);
   display: flex; align-items: center; justify-content: space-between;
@@ -871,6 +882,7 @@ textarea.field-sugerido, input.field-sugerido { border-color: #e65100 !important
       <div class="topbar">
         <button class="menu-toggle" onclick="toggleSidebar()"><i class="fas fa-bars"></i></button>
         <div class="topbar-title" id="topbar-title">Dashboard</div>
+        <button type="button" class="topbar-logout" onclick="doLogout()" title="Sair do sistema" aria-label="Sair"><i class="fas fa-right-from-bracket"></i></button>
         <div class="topbar-actions" id="topbar-actions"></div>
       </div>
       <div class="page-content" id="page-content">
@@ -931,6 +943,17 @@ const API_BASE = (() => {
 const AUTH_TOKEN_KEY = 'espen_api_token';
 let authToken = localStorage.getItem(AUTH_TOKEN_KEY) || '';
 const remoteCache = {};
+
+function invalidateUsersCache() {
+  remoteCache[STORAGE_KEYS.users] = null;
+  try { localStorage.removeItem(STORAGE_KEYS.users); } catch (_) {}
+}
+
+function fmtAE(v) {
+  if (v === null || v === undefined) return '-';
+  const s = String(v).trim();
+  return s === '' ? '-' : s;
+}
 
 // Simple hash function for passwords
 function hashPassword(password) {
@@ -1490,14 +1513,15 @@ function doLogin() {
   const cpf = document.getElementById('login-cpf').value.trim();
   const senha = document.getElementById('login-senha').value;
   if (!cpf || !senha) { showToast('Preencha CPF e senha', 'warning'); return; }
+  if (!validateCPF(cpf)) { showToast('CPF inválido. Verifique os dígitos.', 'error'); return; }
 
   try {
     const response = apiRequest('POST', '/auth/login', { cpf, senha }, false);
     authToken = response.access_token;
     localStorage.setItem(AUTH_TOKEN_KEY, authToken);
-    remoteCache[STORAGE_KEYS.users] = null;
     currentUser = response.user;
     setStorage(STORAGE_KEYS.session, { userId: response.user.id, cpf: response.user.cpf, loginTime: Date.now() });
+    invalidateUsersCache();
     enterApp();
   } catch (err) {
     showToast(err.message || 'CPF ou senha inválidos', 'error');
@@ -1600,6 +1624,25 @@ const pageMap = {
 
 let currentPage = 'dashboard';
 let charts = {};
+
+function destroyDashboardCharts() {
+  Object.keys(charts).forEach((k) => {
+    try { charts[k].destroy(); } catch (_) {}
+  });
+  charts = {};
+}
+
+function getMatrizEscopoDashboard(dashSel, acoes, matriz) {
+  const ativos = (matriz || []).filter(r => !r.arquivado);
+  if (dashSel.mode === 'all') return ativos;
+  if (dashSel.mode === 'none') return [];
+  const set = new Set();
+  (acoes || []).filter(a => dashSel.ids.includes(a.id)).forEach(a => {
+    (a.competencias_vinculadas || []).forEach(cid => { if (cid) set.add(cid); });
+  });
+  if (set.size === 0) return [];
+  return ativos.filter(r => set.has(r.id));
+}
 
 function navigate(page) {
   currentPage = page;
@@ -1729,8 +1772,8 @@ window.saveDashboardSelectionFromUI = function() {
   const selectedIds = Array.from(select.selectedOptions).map(o => o.value);
   saveDashboardSelection(selectedIds, { explicit_empty: selectedIds.length === 0 });
   const msg = selectedIds.length === 0
-    ? 'Filtro salvo: nenhuma ação no painel (KPIs usam todas para métricas gerais).'
-    : `Filtro salvo com ${selectedIds.length} ação(ões).`;
+    ? 'Filtro salvo: nenhuma ação no escopo; gráficos da matriz ficam vazios até você escolher ações ou limpar o filtro.'
+    : `Filtro salvo com ${selectedIds.length} ação(ões). Gráficos da matriz usam só competências vinculadas a essas ações.`;
   showToast(msg, 'success');
   renderDashboard();
 };
@@ -1812,29 +1855,99 @@ function buildMatrizImportRecord(row) {
   };
 }
 
+function acaoEixoUnidadeFromLegacy(a) {
+  if (a && a.eixo != null && String(a.eixo).trim()) {
+    return { eixo: String(a.eixo).trim(), unidade: (a.unidade != null && String(a.unidade).trim()) ? String(a.unidade).trim() : '' };
+  }
+  const et = String((a && a.eixo_tematico) || '').trim();
+  if (!et) return { eixo: '', unidade: '' };
+  const parts = et.split(/\s*\/\s*/);
+  if (parts.length >= 2) return { eixo: parts[0].trim(), unidade: parts.slice(1).join(' / ').trim() };
+  return { eixo: et, unidade: '' };
+}
+
+function syncEixoTematicoLegado(eixo, unidade) {
+  const e = String(eixo || '').trim();
+  const u = String(unidade || '').trim();
+  if (e && u) return `${e} / ${u}`;
+  return e || u || '';
+}
+
 function buildAcoesImportRecord(row) {
-  const carga = parseInt(getRowValue(row, ['carga_horaria', 'ch', 'carga']), 10);
+  const carga = parseInt(getRowValue(row, ['carga_horaria', 'ch', 'carga', '13_carga_horaria']), 10);
+  const eixo = getRowValue(row, ['eixo', '6_eixo']);
+  const unidade = getRowValue(row, ['unidade', '7_unidade']);
+  const instA = getRowValue(row, [
+    'instrumento_avaliacao_aprendizagem', 'instrumento_avaliacao',
+    '22_instrumentos_de_avaliacao_de_aprendizagem', '22_instrumento_de_avaliacao_da_aprendizagem',
+  ]);
+  const instR = getRowValue(row, [
+    'instrumento_avaliacao_reacao',
+    '23_instrumentos_de_avaliacao_de_reacao', '23_instrumento_de_avaliacao_da_reacao',
+  ]);
+  const instT = getRowValue(row, [
+    'instrumento_avaliacao_transferencia',
+    '24_instrumentos_de_avaliacao_de_transferencia_e_impacto', '24_instrumento_de_avaliacao_da_transferencia',
+  ]);
+  const nome = getRowValue(row, ['nome', 'nome_da_acao', '3_nome_da_acao']);
+  const objEsp = getRowValue(row, ['objetivos_especificos', '11_objetivos_especificos']);
+  const compOferta = getRowValue(row, ['competencia', '10_competencia', 'competencia_texto']);
+  const objetivoGeral = getRowValue(row, ['objetivo_geral', 'objetivo'])
+    || [compOferta, objEsp].filter(Boolean).join('\n\n')
+    || getRowValue(row, ['objetivo_de_aprendizagem_mcn', 'objetivo_aprendizagem_mcn'])
+    || String(getRowValue(row, ['conteudos', '15_conteudos']) || '').slice(0, 2000);
   return {
     id: getRowValue(row, ['id']) || genId(),
-    nome: getRowValue(row, ['nome', 'nome_da_acao']),
-    objetivo_geral: getRowValue(row, ['objetivo_geral', 'objetivo']),
-    codigo: getRowValue(row, ['codigo']),
-    tipo: getRowValue(row, ['tipo']) || 'Curso',
-    area_demandante: getRowValue(row, ['area_demandante']),
-    escola_proponente: getRowValue(row, ['escola_proponente']) || 'ESPEN',
-    eixo_tematico: getRowValue(row, ['eixo_tematico', 'eixo']),
+    nome,
+    objetivo_geral: objetivoGeral,
+    codigo: getRowValue(row, ['codigo', 'id_ae']),
+    tipo: getRowValue(row, ['tipo', '4_tipo_da_acao']) || 'Curso',
+    estado: getRowValue(row, ['estado']),
+    sigla_estado: getRowValue(row, ['sigla_estado']),
+    e_trilha: getRowValue(row, ['e_trilha']),
+    e_modulo: getRowValue(row, ['e_modulo']),
+    modulos_associados: getRowValue(row, ['modulos_associados']),
+    competencia_mcn: getRowValue(row, ['competencia_mcn']),
+    eixo_funcional_mcn: getRowValue(row, ['eixo_funcional_mcn']),
+    unidade_tematica_mcn: getRowValue(row, ['unidade_tematica_mcn']),
+    conhecimento_critico_mcn: getRowValue(row, ['conhecimento_critico_e_para_a_pratica', 'conhecimento_critico_mcn']),
+    objetivo_aprendizagem_mcn: getRowValue(row, ['objetivo_de_aprendizagem_mcn', 'objetivo_aprendizagem_mcn']),
+    area_demandante: getRowValue(row, ['area_demandante', '1_area_demandante']),
+    escola_proponente: getRowValue(row, ['escola_proponente', '2_escola_proponente']) || 'ESPEN',
+    eixo,
+    unidade,
+    eixo_tematico: syncEixoTematicoLegado(eixo, unidade) || getRowValue(row, ['eixo_tematico']),
+    justificativa_oferta: getRowValue(row, ['justificativa_da_oferta', 'justificativa_oferta', '8_justificativa_da_oferta']),
+    amparo_legal: getRowValue(row, ['amparo_legal', '9_amparo_legal']),
+    competencia_texto: compOferta,
+    objetivos_especificos: objEsp,
     status: getRowValue(row, ['status']) || 'Ativo',
     ementa: getRowValue(row, ['ementa']),
-    conteudo_programatico: getRowValue(row, ['conteudo_programatico']),
-    metodologia: getRowValue(row, ['metodologia']),
+    conteudo_programatico: getRowValue(row, ['conteudo_programatico', 'conteudos', '15_conteudos']),
+    metodologia: getRowValue(row, ['metodologia', '16_metodologia_de_ensino']),
+    duracao: getRowValue(row, ['duracao', '14_duracao']),
+    espaco_fisico: getRowValue(row, ['espaco_fisico', '17_espaco_fisico']),
+    plataforma_virtual: getRowValue(row, [
+      'plataforma_virtual',
+      '18_plataforma_virtual_de_ensino_e_aprendizagem',
+      '18_plataforma_virtual_de_ensino_aprendizagem',
+    ]),
+    recursos_materiais: getRowValue(row, ['recursos_materiais', '19_recursos_materiais']),
+    recursos_tecnologicos: getRowValue(row, ['recursos_tecnologicos', '20_recursos_tecnologicos']),
+    recursos_humanos: getRowValue(row, ['recursos_humanos', '21_recursos_humanos']),
     carga_horaria: Number.isFinite(carga) ? carga : 0,
     num_modulos: parseInt(getRowValue(row, ['num_modulos', 'modulos']), 10) || 1,
-    modalidade: getRowValue(row, ['modalidade']) || 'EaD',
+    modalidade: getRowValue(row, ['modalidade', '12_modalidade']) || 'EaD',
     num_vagas: parseInt(getRowValue(row, ['num_vagas', 'vagas']), 10) || 0,
-    publico_alvo: getRowValue(row, ['publico_alvo']),
+    publico_alvo: getRowValue(row, ['publico_alvo', '5_publico_alvo']),
     frequencia_minima: parseInt(getRowValue(row, ['frequencia_minima']), 10) || 90,
-    instrumento_avaliacao: getRowValue(row, ['instrumento_avaliacao']),
-    criterio_certificacao: getRowValue(row, ['criterio_certificacao']),
+    instrumento_avaliacao_aprendizagem: instA,
+    instrumento_avaliacao_reacao: instR,
+    instrumento_avaliacao_transferencia: instT,
+    instrumento_avaliacao: instA || getRowValue(row, ['instrumento_avaliacao']),
+    criterios_matricula: getRowValue(row, ['criterios_de_matricula', 'criterios_matricula', '25_criterios_de_matricula']),
+    criterio_certificacao: getRowValue(row, ['criterio_certificacao', 'criterios_de_certificacao', '26_criterios_de_certificacao']),
+    bibliografia: getRowValue(row, ['bibliografia', '27_bibliografia']),
     data_criacao: getRowValue(row, ['data_criacao']) || new Date().toISOString().split('T')[0],
   };
 }
@@ -1984,6 +2097,7 @@ function importExcelData(moduleKey) {
 // DASHBOARD
 // ================================================================
 function renderDashboard() {
+  destroyDashboardCharts();
   const matriz = getStorage(STORAGE_KEYS.matriz) || [];
   const acoes = getStorage(STORAGE_KEYS.acoes) || [];
   const trilhas = getStorage(STORAGE_KEYS.trilhas) || [];
@@ -1995,6 +2109,14 @@ function renderDashboard() {
     : dashSel.mode === 'filtered'
       ? acoes.filter(a => dashSel.ids.includes(a.id))
       : acoes;
+  const matrizEscopo = getMatrizEscopoDashboard(dashSel, acoes, matriz);
+  const scopeHint = dashSel.mode === 'all'
+    ? 'Os gráficos refletem todas as competências ativas da matriz.'
+    : dashSel.mode === 'none'
+      ? 'Filtro vazio: gráficos da matriz sem dados (nenhuma ação no escopo).'
+      : matrizEscopo.length
+        ? 'Os gráficos mostram apenas competências vinculadas às ações selecionadas no filtro.'
+        : 'Nenhuma competência da matriz vinculada às ações escolhidas; gráficos ficam vazios. Vincule ações à matriz ou ajuste o filtro.';
 
   document.getElementById('page-content').innerHTML = `
     <div class="dashboard-filter-wrap">
@@ -2007,6 +2129,7 @@ function renderDashboard() {
           <div class="text-muted" style="margin-top:6px;">
             ${dashSel.mode === 'all' ? 'Nenhum filtro salvo: o painel lateral lista todas as ações.' : dashSel.mode === 'none' ? 'Filtro explícito: nenhuma ação no painel (use o botão Salvar com lista vazia).' : `${filteredAcoes.length} ação(ões) no painel.`}
           </div>
+          <div class="text-muted" style="margin-top:8px;font-size:12px;line-height:1.4;">${scopeHint}</div>
         </div>
         <div class="dashboard-filter-actions">
           <button class="btn btn-primary btn-sm" onclick="saveDashboardSelectionFromUI()"><i class="fas fa-filter"></i> Salvar Filtro</button>
@@ -2019,8 +2142,8 @@ function renderDashboard() {
       <div class="kpi-card blue">
         <div class="kpi-icon"><i class="fas fa-table-cells"></i></div>
         <div>
-          <div class="kpi-number">${matriz.length}</div>
-          <div class="kpi-label">Competências na Matriz</div>
+          <div class="kpi-number">${matrizEscopo.length}</div>
+          <div class="kpi-label">Competências no escopo (${dashSel.mode === 'all' ? 'todas' : dashSel.mode === 'none' ? 'nenhuma' : 'filtrado'})</div>
         </div>
       </div>
       <div class="kpi-card gold">
@@ -2086,8 +2209,7 @@ function renderDashboard() {
   const cargoCounts = {};
   const unidadeCounts = {};
 
-  matriz.forEach(r => {
-    if (r.arquivado) return;
+  matrizEscopo.forEach(r => {
     const e = r.eixo || 'Outros';
     const ek = e.length > 30 ? e.substring(0, 28) + '…' : e;
     eixoCounts[ek] = (eixoCounts[ek] || 0) + 1;
@@ -2098,7 +2220,10 @@ function renderDashboard() {
     if (r.unidade) unidadeCounts[r.unidade] = (unidadeCounts[r.unidade] || 0) + 1;
   });
 
-  const topUnidades = Object.entries(unidadeCounts).sort((a, b) => b[1] - a[1]).slice(0, 8);
+  let topUnidades = Object.entries(unidadeCounts).sort((a, b) => b[1] - a[1]).slice(0, 8);
+  if (!Object.keys(eixoCounts).length) eixoCounts['(sem dados no escopo)'] = 0;
+  if (!Object.keys(cargoCounts).length) cargoCounts['(sem dados no escopo)'] = 0;
+  if (!topUnidades.length) topUnidades = [['(sem dados no escopo)', 0]];
 
   setTimeout(() => {
     // Chart: Eixo Funcional
@@ -2716,6 +2841,13 @@ window.sugerirCamposAcaoPorMatriz = function() {
     }
   };
   setIfEmpty('af-eixo', best.eixo || '');
+  setIfEmpty('af-unidade', best.unidade || '');
+  setIfEmpty('af-competencia-mcn', best.competencia || '');
+  setIfEmpty('af-eixo-func-mcn', best.eixo || '');
+  setIfEmpty('af-unidade-mcn', best.unidade || '');
+  setIfEmpty('af-conhecimento-mcn', best.conhecimento || '');
+  setIfEmpty('af-obj-aprend-mcn', best.objetivo || '');
+  setIfEmpty('af-competencia-texto', best.competencia || '');
   setIfEmpty('af-ementa', best.objetivo ? `Com base na competência: ${best.competencia}\n\n${best.objetivo}`.slice(0, 4000) : '');
   setIfEmpty('af-metodologia', 'Estudo de caso, reflexão guiada e práticas alinhadas às diretrizes da MCN.');
   setIfEmpty('af-conteudo', best.conhecimento ? `Eixo: ${best.eixo || '—'}\nUnidade temática: ${best.unidade || '—'}\nConhecimento crítico: ${best.conhecimento}` : '');
@@ -2777,7 +2909,8 @@ function renderAcoesGrid() {
   let data = getStorage(STORAGE_KEYS.acoes) || [];
   if (acoesFilter.search) {
     const s = acoesFilter.search.toLowerCase();
-    data = data.filter(a => (a.nome||'').toLowerCase().includes(s) || (a.codigo||'').toLowerCase().includes(s) || (a.eixo_tematico||'').toLowerCase().includes(s));
+    data = data.filter(a => [a.nome, a.codigo, a.eixo_tematico, a.eixo, a.unidade, a.justificativa_oferta, a.publico_alvo]
+      .some(x => (x || '').toLowerCase().includes(s)));
   }
   if (acoesFilter.modalidade) data = data.filter(a => a.modalidade === acoesFilter.modalidade);
   if (acoesFilter.status) data = data.filter(a => a.status === acoesFilter.status);
@@ -2828,45 +2961,92 @@ function viewAcaoDetail(id) {
   const data = getStorage(STORAGE_KEYS.acoes) || [];
   const a = data.find(x => x.id === id);
   if (!a) return;
+  const eu = acaoEixoUnidadeFromLegacy(a);
+  const instAp = a.instrumento_avaliacao_aprendizagem || a.instrumento_avaliacao || '';
   const mColors = { 'EaD': 'blue', 'Presencial': 'green', 'Semipresencial': 'orange', 'Híbrido': 'gold' };
   const sColors = { 'Ativo': 'green', 'Inativo': 'red', 'Em elaboração': 'gold' };
   const body = `
     <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px;">
-      <span class="badge badge-purple">${a.codigo||'—'}</span>
-      <span class="badge badge-${mColors[a.modalidade]||'gray'}">${a.modalidade||'—'}</span>
-      <span class="badge badge-${sColors[a.status]||'gray'}">${a.status||'—'}</span>
+      <span class="badge badge-purple">${fmtAE(a.codigo)}</span>
+      <span class="badge badge-${mColors[a.modalidade]||'gray'}">${fmtAE(a.modalidade)}</span>
+      <span class="badge badge-${sColors[a.status]||'gray'}">${fmtAE(a.status)}</span>
       <span class="badge badge-gray">${a.carga_horaria||0}h</span>
     </div>
+    <div class="form-section-title">Contexto (cadastro único)</div>
+    <div class="detail-grid">
+      <div class="detail-field"><div class="detail-label">Estado</div><div class="detail-value">${fmtAE(a.estado)}</div></div>
+      <div class="detail-field"><div class="detail-label">Sigla Estado</div><div class="detail-value">${fmtAE(a.sigla_estado)}</div></div>
+      <div class="detail-field"><div class="detail-label">É Trilha?</div><div class="detail-value">${fmtAE(a.e_trilha)}</div></div>
+      <div class="detail-field"><div class="detail-label">É Módulo?</div><div class="detail-value">${fmtAE(a.e_modulo)}</div></div>
+    </div>
+    <div class="detail-field"><div class="detail-label">Módulos associados</div><div class="detail-value" style="white-space:pre-line;">${fmtAE(a.modulos_associados)}</div></div>
+    <div class="divider"></div>
+    <div class="form-section-title">Alinhamento MCN (texto)</div>
+    <div class="detail-grid">
+      <div class="detail-field"><div class="detail-label">Competência MCN</div><div class="detail-value">${fmtAE(a.competencia_mcn)}</div></div>
+      <div class="detail-field"><div class="detail-label">Eixo funcional MCN</div><div class="detail-value">${fmtAE(a.eixo_funcional_mcn)}</div></div>
+      <div class="detail-field"><div class="detail-label">Unidade temática MCN</div><div class="detail-value">${fmtAE(a.unidade_tematica_mcn)}</div></div>
+    </div>
+    <div class="detail-field"><div class="detail-label">Conhecimento crítico e para a prática</div><div class="detail-value" style="white-space:pre-line;">${fmtAE(a.conhecimento_critico_mcn)}</div></div>
+    <div class="detail-field"><div class="detail-label">Objetivo de aprendizagem MCN</div><div class="detail-value" style="white-space:pre-line;">${fmtAE(a.objetivo_aprendizagem_mcn)}</div></div>
+    <div class="divider"></div>
     <div class="form-section-title">Identificação</div>
     <div class="detail-grid">
-      <div class="detail-field"><div class="detail-label">Código</div><div class="detail-value">${a.codigo||'—'}</div></div>
-      <div class="detail-field"><div class="detail-label">Tipo</div><div class="detail-value">${a.tipo||'—'}</div></div>
-      <div class="detail-field"><div class="detail-label">Área Demandante</div><div class="detail-value">${a.area_demandante||'—'}</div></div>
-      <div class="detail-field"><div class="detail-label">Escola Proponente</div><div class="detail-value">${a.escola_proponente||'—'}</div></div>
-      <div class="detail-field"><div class="detail-label">Eixo Temático</div><div class="detail-value">${a.eixo_tematico||'—'}</div></div>
+      <div class="detail-field"><div class="detail-label">Código / ID AE</div><div class="detail-value">${fmtAE(a.codigo)}</div></div>
+      <div class="detail-field"><div class="detail-label">Tipo</div><div class="detail-value">${fmtAE(a.tipo)}</div></div>
+      <div class="detail-field"><div class="detail-label">Área Demandante</div><div class="detail-value">${fmtAE(a.area_demandante)}</div></div>
+      <div class="detail-field"><div class="detail-label">Escola Proponente</div><div class="detail-value">${fmtAE(a.escola_proponente)}</div></div>
+      <div class="detail-field"><div class="detail-label">Eixo (oferta)</div><div class="detail-value">${fmtAE(eu.eixo || a.eixo_tematico)}</div></div>
+      <div class="detail-field"><div class="detail-label">Unidade (oferta)</div><div class="detail-value">${fmtAE(eu.unidade)}</div></div>
       <div class="detail-field"><div class="detail-label">Nº de Módulos</div><div class="detail-value">${a.num_modulos||1}</div></div>
     </div>
     <div class="divider"></div>
-    <div class="form-section-title">Objetivo e Ementa</div>
-    <div class="detail-field"><div class="detail-label">Objetivo Geral</div><div class="detail-value" style="line-height:1.6;">${a.objetivo_geral||'—'}</div></div>
-    <div class="detail-field"><div class="detail-label">Ementa</div><div class="detail-value" style="line-height:1.6;white-space:pre-line;">${a.ementa||'—'}</div></div>
-    <div class="detail-field"><div class="detail-label">Conteúdo Programático</div><div class="detail-value" style="line-height:1.8;white-space:pre-line;background:var(--gray-50);padding:12px;border-radius:8px;font-size:13px;">${a.conteudo_programatico||'—'}</div></div>
+    <div class="form-section-title">Planejamento pedagógico</div>
+    <div class="detail-field"><div class="detail-label">Justificativa da oferta</div><div class="detail-value" style="white-space:pre-line;">${fmtAE(a.justificativa_oferta)}</div></div>
+    <div class="detail-field"><div class="detail-label">Amparo legal</div><div class="detail-value" style="white-space:pre-line;">${fmtAE(a.amparo_legal)}</div></div>
+    <div class="detail-field"><div class="detail-label">Competência (oferta)</div><div class="detail-value" style="white-space:pre-line;">${fmtAE(a.competencia_texto)}</div></div>
+    <div class="detail-field"><div class="detail-label">Objetivos específicos</div><div class="detail-value" style="white-space:pre-line;">${fmtAE(a.objetivos_especificos)}</div></div>
     <div class="divider"></div>
-    <div class="form-section-title">Informações Operacionais</div>
+    <div class="form-section-title">Objetivo geral, ementa e conteúdos</div>
+    <div class="detail-field"><div class="detail-label">Objetivo Geral</div><div class="detail-value" style="line-height:1.6;">${fmtAE(a.objetivo_geral)}</div></div>
+    <div class="detail-field"><div class="detail-label">Ementa</div><div class="detail-value" style="line-height:1.6;white-space:pre-line;">${fmtAE(a.ementa)}</div></div>
+    <div class="detail-field"><div class="detail-label">Conteúdo Programático</div><div class="detail-value" style="line-height:1.8;white-space:pre-line;background:var(--gray-50);padding:12px;border-radius:8px;font-size:13px;">${fmtAE(a.conteudo_programatico)}</div></div>
+    <div class="detail-field"><div class="detail-label">Metodologia</div><div class="detail-value" style="white-space:pre-line;">${fmtAE(a.metodologia)}</div></div>
+    <div class="divider"></div>
+    <div class="form-section-title">Modalidade, carga e infraestrutura</div>
     <div class="detail-grid">
+      <div class="detail-field"><div class="detail-label">Modalidade</div><div class="detail-value">${fmtAE(a.modalidade)}</div></div>
       <div class="detail-field"><div class="detail-label">Carga Horária</div><div class="detail-value">${a.carga_horaria||0} h/a</div></div>
-      <div class="detail-field"><div class="detail-label">Modalidade</div><div class="detail-value">${a.modalidade||'—'}</div></div>
-      <div class="detail-field"><div class="detail-label">Público-Alvo</div><div class="detail-value">${a.publico_alvo||'—'}</div></div>
-      <div class="detail-field"><div class="detail-label">Nº de Vagas</div><div class="detail-value">${a.num_vagas||'—'}</div></div>
-      <div class="detail-field"><div class="detail-label">Frequência Mínima</div><div class="detail-value">${a.frequencia_minima||'—'}%</div></div>
-      <div class="detail-field"><div class="detail-label">Instrumento de Avaliação</div><div class="detail-value">${a.instrumento_avaliacao||'—'}</div></div>
+      <div class="detail-field"><div class="detail-label">Duração</div><div class="detail-value">${fmtAE(a.duracao)}</div></div>
+      <div class="detail-field"><div class="detail-label">Público-Alvo</div><div class="detail-value">${fmtAE(a.publico_alvo)}</div></div>
+      <div class="detail-field"><div class="detail-label">Espaço físico</div><div class="detail-value">${fmtAE(a.espaco_fisico)}</div></div>
+      <div class="detail-field"><div class="detail-label">Plataforma virtual</div><div class="detail-value">${fmtAE(a.plataforma_virtual)}</div></div>
     </div>
-    <div class="detail-field"><div class="detail-label">Critério de Certificação</div><div class="detail-value">${a.criterio_certificacao||'—'}</div></div>
-    <div class="detail-field"><div class="detail-label">Metodologia</div><div class="detail-value">${a.metodologia||'—'}</div></div>
+    <div class="divider"></div>
+    <div class="form-section-title">Recursos (materiais, tecnológicos, humanos)</div>
+    <div class="detail-field"><div class="detail-label">Recursos materiais</div><div class="detail-value" style="white-space:pre-line;">${fmtAE(a.recursos_materiais)}</div></div>
+    <div class="detail-field"><div class="detail-label">Recursos tecnológicos</div><div class="detail-value" style="white-space:pre-line;">${fmtAE(a.recursos_tecnologicos)}</div></div>
+    <div class="detail-field"><div class="detail-label">Recursos humanos</div><div class="detail-value" style="white-space:pre-line;">${fmtAE(a.recursos_humanos)}</div></div>
+    <div class="divider"></div>
+    <div class="form-section-title">Avaliação</div>
+    <div class="detail-grid">
+      <div class="detail-field"><div class="detail-label">Instrumento — aprendizagem</div><div class="detail-value" style="white-space:pre-line;">${fmtAE(instAp)}</div></div>
+      <div class="detail-field"><div class="detail-label">Instrumento — reação</div><div class="detail-value" style="white-space:pre-line;">${fmtAE(a.instrumento_avaliacao_reacao)}</div></div>
+      <div class="detail-field"><div class="detail-label">Instrumento — transferência</div><div class="detail-value" style="white-space:pre-line;">${fmtAE(a.instrumento_avaliacao_transferencia)}</div></div>
+    </div>
+    <div class="divider"></div>
+    <div class="form-section-title">Matrícula, certificação e bibliografia</div>
+    <div class="detail-field"><div class="detail-label">Critérios de matrícula</div><div class="detail-value" style="white-space:pre-line;">${fmtAE(a.criterios_matricula)}</div></div>
+    <div class="detail-grid">
+      <div class="detail-field"><div class="detail-label">Nº de Vagas</div><div class="detail-value">${a.num_vagas != null && a.num_vagas !== '' ? a.num_vagas : '-'}</div></div>
+      <div class="detail-field"><div class="detail-label">Frequência Mínima</div><div class="detail-value">${a.frequencia_minima != null && a.frequencia_minima !== '' ? a.frequencia_minima + '%' : '-'}</div></div>
+    </div>
+    <div class="detail-field"><div class="detail-label">Critérios de certificação</div><div class="detail-value" style="white-space:pre-line;">${fmtAE(a.criterio_certificacao)}</div></div>
+    <div class="detail-field"><div class="detail-label">Bibliografia</div><div class="detail-value" style="white-space:pre-line;">${fmtAE(a.bibliografia)}</div></div>
     ${(a.competencias_vinculadas && a.competencias_vinculadas.length) ? `
     <div class="divider"></div>
     <div class="detail-field">
-      <div class="detail-label">Competências da MCN vinculadas</div>
+      <div class="detail-label">Competências da MCN vinculadas (registros)</div>
       <div class="detail-value" style="font-size:13px;line-height:1.5;">${(a.competencias_vinculadas||[]).map(cid => {
         const m = (getStorage(STORAGE_KEYS.matriz)||[]).find(x => x.id === cid);
         return m ? `• ${m.competencia}` : `• (${cid})`;
@@ -2876,30 +3056,105 @@ function viewAcaoDetail(id) {
   openModal(a.nome, body, '<button class="btn btn-secondary" onclick="closeModalBtn()">Fechar</button>', true);
 }
 
-function openAcaoForm(id = null) {
+function openAcaoForm(id = null, cloneFromId = null) {
   if (isSomenteLeitura()) return;
   const data = getStorage(STORAGE_KEYS.acoes) || [];
-  const a = id ? (data.find(x => x.id === id) || {}) : {};
+  let a = {};
+  if (id) {
+    a = data.find(x => x.id === id) || {};
+  } else if (cloneFromId) {
+    const src = data.find(x => x.id === cloneFromId);
+    if (src) {
+      a = JSON.parse(JSON.stringify(src));
+      delete a.id;
+      delete a.data_criacao;
+    }
+  }
+  const eu = acaoEixoUnidadeFromLegacy(a);
+  const instLeg = a.instrumento_avaliacao_aprendizagem || a.instrumento_avaliacao || '';
   const modOpts = ['EaD','Presencial','Semipresencial','Híbrido'].map(o => `<option ${a.modalidade===o?'selected':''}>${o}</option>`).join('');
   const statOpts = ['Ativo','Inativo','Em elaboração'].map(o => `<option ${a.status===o?'selected':''}>${o}</option>`).join('');
   const tipoOpts = ['Curso','Módulo','Disciplina','Oficina','Seminário','Palestra'].map(o => `<option ${a.tipo===o?'selected':''}>${o}</option>`).join('');
+  const yn = (v) => {
+    const s = String(v || '').trim().toLowerCase();
+    if (s === 'sim' || s === 's' || v === true || v === 1) return 'Sim';
+    if (s === 'não' || s === 'nao' || s === 'n' || v === false || v === 0) return 'Não';
+    return '';
+  };
+  const selTrilha = yn(a.e_trilha);
+  const selModulo = yn(a.e_modulo);
+
+  const baseNovaOpts = !id ? `
+    <div class="form-section">
+      <div class="form-section-title">Nova ação — base opcional</div>
+      <p style="font-size:12px;color:var(--gray-600);margin:-4px 0 10px;">Carregue uma ação existente como modelo. Ao salvar, será criado um <strong>novo</strong> registro (não altera o original).</p>
+      <div class="form-group form-full">
+        <label>Copiar dados de</label>
+        <select id="af-clone-base" onchange="var v=this.value;if(v){openAcaoForm(null,v);}">
+          <option value="">— Em branco —</option>
+          ${data.map(x => `<option value="${x.id}" ${cloneFromId===x.id?'selected':''}>${(x.nome||'Sem nome').replace(/</g,'&lt;').substring(0,90)}${(x.codigo?' ('+String(x.codigo).replace(/</g,'')+')':'')}</option>`).join('')}
+        </select>
+      </div>
+    </div>` : '';
 
   const body = `
+    <input type="hidden" id="af-row-id" value="${id||''}">
+    ${baseNovaOpts}
+    <div class="form-section">
+      <div class="form-section-title">Contexto (cadastro único)</div>
+      <div class="form-grid">
+        <div class="form-group"><label>Estado</label><input type="text" id="af-estado" value="${a.estado||''}" placeholder="Ex: Distrito Federal"></div>
+        <div class="form-group"><label>Sigla Estado</label><input type="text" id="af-sigla-estado" value="${a.sigla_estado||''}" placeholder="DF"></div>
+        <div class="form-group"><label>É Trilha?</label>
+          <select id="af-e-trilha">
+            <option value="" ${!selTrilha?'selected':''}>—</option>
+            <option ${selTrilha==='Sim'?'selected':''}>Sim</option>
+            <option ${selTrilha==='Não'?'selected':''}>Não</option>
+          </select>
+        </div>
+        <div class="form-group"><label>É Módulo?</label>
+          <select id="af-e-modulo">
+            <option value="" ${!selModulo?'selected':''}>—</option>
+            <option ${selModulo==='Sim'?'selected':''}>Sim</option>
+            <option ${selModulo==='Não'?'selected':''}>Não</option>
+          </select>
+        </div>
+        <div class="form-group form-full"><label>Módulos associados</label><textarea id="af-modulos-associados" rows="2" placeholder="Referência a outros módulos ou trilhas">${a.modulos_associados||''}</textarea></div>
+      </div>
+    </div>
+    <div class="form-section">
+      <div class="form-section-title">Alinhamento MCN (texto livre)</div>
+      <div class="form-grid">
+        <div class="form-group form-full"><label>Competência MCN</label><input type="text" id="af-competencia-mcn" value="${a.competencia_mcn||''}"></div>
+        <div class="form-group"><label>Eixo funcional MCN</label><input type="text" id="af-eixo-func-mcn" value="${a.eixo_funcional_mcn||''}"></div>
+        <div class="form-group"><label>Unidade temática MCN</label><input type="text" id="af-unidade-mcn" value="${a.unidade_tematica_mcn||''}"></div>
+      </div>
+      <div class="form-group"><label>Conhecimento crítico e para a prática</label><textarea id="af-conhecimento-mcn" rows="2">${a.conhecimento_critico_mcn||''}</textarea></div>
+      <div class="form-group"><label>Objetivo de aprendizagem MCN</label><textarea id="af-obj-aprend-mcn" rows="2">${a.objetivo_aprendizagem_mcn||''}</textarea></div>
+    </div>
     <div class="form-section">
       <div class="form-section-title">Identificação</div>
       <div class="form-grid">
-        <div class="form-group"><label>Código (AE_ESPEN##)</label><input type="text" id="af-codigo" value="${a.codigo||''}" placeholder="AE_ESPEN00"></div>
+        <div class="form-group"><label>Código / ID AE</label><input type="text" id="af-codigo" value="${a.codigo||''}" placeholder="AE_ESPEN00"></div>
         <div class="form-group"><label>Tipo</label><select id="af-tipo">${tipoOpts}</select></div>
         <div class="form-group form-full"><label>Nome da Ação *</label><input type="text" id="af-nome" value="${a.nome||''}" placeholder="Nome completo da ação educativa"></div>
         <div class="form-group"><label>Área Demandante</label><input type="text" id="af-area" value="${a.area_demandante||''}" placeholder="Ex: SENAPPEN/DIRPP"></div>
         <div class="form-group"><label>Escola Proponente</label><input type="text" id="af-escola" value="${a.escola_proponente||'ESPEN'}"></div>
-        <div class="form-group"><label>Eixo/Área Temática</label><input type="text" id="af-eixo" value="${a.eixo_tematico||''}" placeholder="Ex: Segurança Orgânica"></div>
+        <div class="form-group"><label>Eixo (oferta)</label><input type="text" id="af-eixo" value="${eu.eixo||''}" placeholder="Item 6 do cadastro único"></div>
+        <div class="form-group"><label>Unidade (oferta)</label><input type="text" id="af-unidade" value="${eu.unidade||''}" placeholder="Item 7 do cadastro único"></div>
         <div class="form-group"><label>Status</label><select id="af-status">${statOpts}</select></div>
       </div>
     </div>
     <div class="form-section">
-      <div class="form-section-title">Detalhamento Pedagógico</div>
-      <p style="font-size:12px;color:var(--gray-600);margin:-4px 0 10px;">Campos com borda laranja podem ser preenchidos automaticamente pela similaridade com a matriz (botão abaixo).</p>
+      <div class="form-section-title">Planejamento pedagógico</div>
+      <p style="font-size:12px;color:var(--gray-600);margin:-4px 0 10px;">Campos com borda laranja podem ser preenchidos pela similaridade com a matriz (botão em “Objetivo e conteúdos”).</p>
+      <div class="form-group"><label>Justificativa da oferta</label><textarea id="af-justificativa" rows="3">${a.justificativa_oferta||''}</textarea></div>
+      <div class="form-group"><label>Amparo legal</label><textarea id="af-amparo" rows="2">${a.amparo_legal||''}</textarea></div>
+      <div class="form-group"><label>Competência (oferta)</label><textarea id="af-competencia-texto" rows="2">${a.competencia_texto||''}</textarea></div>
+      <div class="form-group"><label>Objetivos específicos</label><textarea id="af-objetivos-especificos" rows="3">${a.objetivos_especificos||''}</textarea></div>
+    </div>
+    <div class="form-section">
+      <div class="form-section-title">Objetivo geral e conteúdos</div>
       <div style="margin-bottom:12px;">
         <button type="button" class="btn btn-secondary btn-sm" onclick="sugerirCamposAcaoPorMatriz()"><i class="fas fa-magic"></i> Preencher por similaridade com a matriz</button>
       </div>
@@ -2919,58 +3174,123 @@ function openAcaoForm(id = null) {
       </div>
     </div>
     <div class="form-section">
-      <div class="form-section-title">Informações Operacionais</div>
+      <div class="form-section-title">Modalidade, carga e infraestrutura</div>
       <div class="form-grid">
-        <div class="form-group"><label>Carga Horária (h/a) *</label><input type="number" id="af-ch" value="${a.carga_horaria||''}" min="1" placeholder="0"></div>
-        <div class="form-group"><label>Nº de Módulos</label><input type="number" id="af-modulos" value="${a.num_modulos||1}" min="1"></div>
         <div class="form-group"><label>Modalidade *</label><select id="af-modalidade">${modOpts}</select></div>
-        <div class="form-group"><label>Nº de Vagas</label><input type="number" id="af-vagas" value="${a.num_vagas||''}" min="1"></div>
+        <div class="form-group"><label>Carga Horária (h/a) *</label><input type="number" id="af-ch" value="${a.carga_horaria||''}" min="1" placeholder="0"></div>
+        <div class="form-group"><label>Duração</label><input type="text" id="af-duracao" value="${a.duracao||''}" placeholder="Ex: 4 semanas"></div>
+        <div class="form-group"><label>Nº de Módulos</label><input type="number" id="af-modulos" value="${a.num_modulos||1}" min="1"></div>
         <div class="form-group form-full"><label>Público-Alvo</label><input type="text" id="af-publico" value="${a.publico_alvo||''}" placeholder="Ex: Policiais Penais"></div>
+        <div class="form-group"><label>Espaço físico</label><input type="text" id="af-espaco-fisico" value="${a.espaco_fisico||''}"></div>
+        <div class="form-group form-full"><label>Plataforma virtual de ensino-aprendizagem</label><input type="text" id="af-plataforma" value="${a.plataforma_virtual||''}"></div>
       </div>
     </div>
     <div class="form-section">
-      <div class="form-section-title">Certificação</div>
+      <div class="form-section-title">Recursos (itens 19–21)</div>
+      <div class="form-group"><label>Recursos materiais</label><textarea id="af-rec-mat" rows="2">${a.recursos_materiais||''}</textarea></div>
+      <div class="form-group"><label>Recursos tecnológicos</label><textarea id="af-rec-tec" rows="2">${a.recursos_tecnologicos||''}</textarea></div>
+      <div class="form-group"><label>Recursos humanos</label><textarea id="af-rec-hum" rows="2">${a.recursos_humanos||''}</textarea></div>
+    </div>
+    <div class="form-section">
+      <div class="form-section-title">Avaliação (itens 22–24)</div>
       <div class="form-grid">
-        <div class="form-group"><label>Frequência Mínima (%)</label><input type="number" id="af-freq" value="${a.frequencia_minima||90}" min="0" max="100"></div>
-        <div class="form-group"><label>Instrumento de Avaliação</label><input type="text" id="af-instrumento" value="${a.instrumento_avaliacao||''}"></div>
-        <div class="form-group form-full"><label>Critério de Certificação</label><textarea id="af-criterio" rows="2">${a.criterio_certificacao||''}</textarea></div>
+        <div class="form-group form-full"><label>Instrumento — aprendizagem</label><input type="text" id="af-inst-aprend" value="${instLeg}"></div>
+        <div class="form-group form-full"><label>Instrumento — reação</label><input type="text" id="af-inst-reacao" value="${a.instrumento_avaliacao_reacao||''}"></div>
+        <div class="form-group form-full"><label>Instrumento — transferência</label><input type="text" id="af-inst-transf" value="${a.instrumento_avaliacao_transferencia||''}"></div>
       </div>
+    </div>
+    <div class="form-section">
+      <div class="form-section-title">Matrícula, certificação e bibliografia</div>
+      <div class="form-group"><label>Critérios de matrícula</label><textarea id="af-criterios-matricula" rows="2">${a.criterios_matricula||''}</textarea></div>
+      <div class="form-grid">
+        <div class="form-group"><label>Nº de Vagas</label><input type="number" id="af-vagas" value="${a.num_vagas||''}" min="1"></div>
+        <div class="form-group"><label>Frequência mínima (%)</label><input type="number" id="af-freq" value="${a.frequencia_minima||90}" min="0" max="100"></div>
+      </div>
+      <div class="form-group"><label>Critérios de certificação</label><textarea id="af-criterio" rows="2">${a.criterio_certificacao||''}</textarea></div>
+      <div class="form-group"><label>Bibliografia</label><textarea id="af-bibliografia" rows="3">${a.bibliografia||''}</textarea></div>
     </div>
   `;
   const footer = `
     <button class="btn btn-secondary" onclick="closeModalBtn()">Cancelar</button>
-    <button class="btn btn-primary" onclick="saveAcao('${id||''}')"><i class="fas fa-save"></i> ${id?'Salvar':'Cadastrar'}</button>
+    <button class="btn btn-primary" onclick="saveAcao()"><i class="fas fa-save"></i> ${id?'Salvar': cloneFromId ? 'Cadastrar como nova' : 'Cadastrar'}</button>
   `;
-  openModal(id ? 'Editar Ação Educativa' : 'Nova Ação Educativa', body, footer, true);
+  const titulo = id ? 'Editar Ação Educativa' : (cloneFromId ? 'Nova Ação Educativa (a partir de modelo)' : 'Nova Ação Educativa');
+  openModal(titulo, body, footer, true);
 }
 
 function editAcao(id) { openAcaoForm(id); }
 
-function saveAcao(id) {
+function saveAcao() {
+  const id = (document.getElementById('af-row-id') && document.getElementById('af-row-id').value) || '';
   const nome = document.getElementById('af-nome').value.trim();
   const objetivo = document.getElementById('af-objetivo').value.trim();
   const ch = document.getElementById('af-ch').value;
   if (!nome || !objetivo || !ch) { showToast('Preencha os campos obrigatórios (*)', 'warning'); return; }
+  const codigoVal = document.getElementById('af-codigo').value.trim();
+  const todas = getStorage(STORAGE_KEYS.acoes) || [];
+  if (!id && codigoVal && todas.some(x => x.codigo && String(x.codigo).trim() === codigoVal)) {
+    showToast('Já existe uma ação com este código. Altere o código para cadastrar como nova.', 'warning');
+    return;
+  }
+  if (id && codigoVal) {
+    const outro = todas.find(x => x.id !== id && x.codigo && String(x.codigo).trim() === codigoVal);
+    if (outro) {
+      showToast('Outra ação já usa este código.', 'warning');
+      return;
+    }
+  }
   const competencias_vinculadas = Array.from(document.querySelectorAll('input[name="af-comp-vinc"]:checked')).map(cb => cb.value);
+  const eixo = document.getElementById('af-eixo').value.trim();
+  const unidade = document.getElementById('af-unidade').value.trim();
+  const eTrilha = document.getElementById('af-e-trilha').value;
+  const eModulo = document.getElementById('af-e-modulo').value;
+  const instAp = document.getElementById('af-inst-aprend').value.trim();
   const rec = {
     nome, objetivo_geral: objetivo,
     codigo: document.getElementById('af-codigo').value.trim(),
     tipo: document.getElementById('af-tipo').value,
+    estado: document.getElementById('af-estado').value.trim(),
+    sigla_estado: document.getElementById('af-sigla-estado').value.trim(),
+    e_trilha: eTrilha || '',
+    e_modulo: eModulo || '',
+    modulos_associados: document.getElementById('af-modulos-associados').value.trim(),
+    competencia_mcn: document.getElementById('af-competencia-mcn').value.trim(),
+    eixo_funcional_mcn: document.getElementById('af-eixo-func-mcn').value.trim(),
+    unidade_tematica_mcn: document.getElementById('af-unidade-mcn').value.trim(),
+    conhecimento_critico_mcn: document.getElementById('af-conhecimento-mcn').value.trim(),
+    objetivo_aprendizagem_mcn: document.getElementById('af-obj-aprend-mcn').value.trim(),
     area_demandante: document.getElementById('af-area').value.trim(),
     escola_proponente: document.getElementById('af-escola').value.trim(),
-    eixo_tematico: document.getElementById('af-eixo').value.trim(),
+    eixo,
+    unidade,
+    eixo_tematico: syncEixoTematicoLegado(eixo, unidade),
+    justificativa_oferta: document.getElementById('af-justificativa').value.trim(),
+    amparo_legal: document.getElementById('af-amparo').value.trim(),
+    competencia_texto: document.getElementById('af-competencia-texto').value.trim(),
+    objetivos_especificos: document.getElementById('af-objetivos-especificos').value.trim(),
     status: document.getElementById('af-status').value,
     ementa: document.getElementById('af-ementa').value.trim(),
     conteudo_programatico: document.getElementById('af-conteudo').value.trim(),
     metodologia: document.getElementById('af-metodologia').value.trim(),
+    duracao: document.getElementById('af-duracao').value.trim(),
+    espaco_fisico: document.getElementById('af-espaco-fisico').value.trim(),
+    plataforma_virtual: document.getElementById('af-plataforma').value.trim(),
+    recursos_materiais: document.getElementById('af-rec-mat').value.trim(),
+    recursos_tecnologicos: document.getElementById('af-rec-tec').value.trim(),
+    recursos_humanos: document.getElementById('af-rec-hum').value.trim(),
     carga_horaria: parseInt(ch),
     num_modulos: parseInt(document.getElementById('af-modulos').value)||1,
     modalidade: document.getElementById('af-modalidade').value,
     num_vagas: parseInt(document.getElementById('af-vagas').value)||0,
     publico_alvo: document.getElementById('af-publico').value.trim(),
     frequencia_minima: parseInt(document.getElementById('af-freq').value)||90,
-    instrumento_avaliacao: document.getElementById('af-instrumento').value.trim(),
+    instrumento_avaliacao_aprendizagem: instAp,
+    instrumento_avaliacao_reacao: document.getElementById('af-inst-reacao').value.trim(),
+    instrumento_avaliacao_transferencia: document.getElementById('af-inst-transf').value.trim(),
+    instrumento_avaliacao: instAp,
+    criterios_matricula: document.getElementById('af-criterios-matricula').value.trim(),
     criterio_certificacao: document.getElementById('af-criterio').value.trim(),
+    bibliografia: document.getElementById('af-bibliografia').value.trim(),
     competencias_vinculadas,
   };
   const data = getStorage(STORAGE_KEYS.acoes) || [];
@@ -3546,13 +3866,13 @@ function openUserForm(id = null) {
         <label>Cargo</label>
         <select id="uf-cargo">
           <option value="">Selecione...</option>
-          ${['Policial Penal','Especialista Federal em Assistência à Execução Penal','Técnico Federal de Apoio à Execução Penal','Docente','Outro'].map(c=>`<option ${u.cargo===c?'selected':''}>${c}</option>`).join('')}
+          ${['Policial Penal','Especialista Federal em Assistência à Execução Penal','Técnico Federal de Apoio à Execução Penal','Docente','Outro'].map(c=>`<option value="${c}" ${u.cargo===c?'selected':''}>${c}</option>`).join('')}
         </select>
       </div>
       <div class="form-group">
         <label>Nível de Acesso</label>
         <select id="uf-acesso">
-          ${['Usuário','Gestor','Administrador'].map(a=>`<option ${(u.acesso||'Usuário')===a?'selected':''}>${a}</option>`).join('')}
+          ${['Usuário','Gestor','Administrador'].map(a=>`<option value="${a}" ${(u.acesso||'Usuário')===a?'selected':''}>${a}</option>`).join('')}
         </select>
       </div>
       ${!id ? `
@@ -3563,14 +3883,15 @@ function openUserForm(id = null) {
   `;
   const footer = `
     <button class="btn btn-secondary" onclick="closeModalBtn()">Cancelar</button>
-    <button class="btn btn-primary" onclick="saveUser('${id||''}')"><i class="fas fa-save"></i> ${id?'Salvar':'Cadastrar'}</button>
+    <button class="btn btn-primary" onclick="saveUser()"><i class="fas fa-save"></i> ${id?'Salvar':'Cadastrar'}</button>
   `;
-  openModal(id ? 'Editar Usuário' : 'Novo Usuário', body, footer, false);
+  openModal(id ? 'Editar Usuário' : 'Novo Usuário', `<input type="hidden" id="uf-row-id" value="${id||''}">${body}`, footer, false);
 }
 
 function editUser(id) { openUserForm(id); }
 
-function saveUser(id) {
+function saveUser() {
+  const id = (document.getElementById('uf-row-id') && document.getElementById('uf-row-id').value) || '';
   const cpf = document.getElementById('uf-cpf').value.trim();
   const nome = document.getElementById('uf-nome').value.trim();
   const email = document.getElementById('uf-email').value.trim();
@@ -3592,7 +3913,7 @@ function saveUser(id) {
     } else {
       apiRequest('POST', '/users', { cpf, nome, email, cargo, acesso, senha });
     }
-    remoteCache[STORAGE_KEYS.users] = null;
+    invalidateUsersCache();
     closeModalBtn();
     showToast(id ? 'Usuário atualizado!' : 'Usuário cadastrado!', 'success');
     renderUsuarios();
@@ -3604,7 +3925,7 @@ function saveUser(id) {
 function toggleUser(id) {
   try {
     const updated = apiRequest('PATCH', `/users/${id}/toggle`);
-    remoteCache[STORAGE_KEYS.users] = null;
+    invalidateUsersCache();
     showToast(`Usuário ${updated.ativo ? 'ativado' : 'desativado'}.`, 'success');
     renderUsuarios();
   } catch (err) {
@@ -4002,14 +4323,42 @@ async function exportAcoesDOCX(btn) {
       }),
     );
 
+    const eu = acaoEixoUnidadeFromLegacy(a);
+    children.push(docxSectionTitle('Contexto'));
+    children.push(docxField('Estado', a.estado));
+    children.push(docxField('Sigla Estado', a.sigla_estado));
+    children.push(docxField('É Trilha?', a.e_trilha));
+    children.push(docxField('É Módulo?', a.e_modulo));
+    children.push(docxField('Módulos associados', a.modulos_associados));
+
+    children.push(docxSectionTitle('Alinhamento MCN (texto)'));
+    children.push(docxField('Competência MCN', a.competencia_mcn));
+    children.push(docxField('Eixo funcional MCN', a.eixo_funcional_mcn));
+    children.push(docxField('Unidade temática MCN', a.unidade_tematica_mcn));
+    children.push(docxField('Conhecimento crítico', ''));
+    children.push(docxText(a.conhecimento_critico_mcn));
+    children.push(docxField('Objetivo de aprendizagem MCN', ''));
+    children.push(docxText(a.objetivo_aprendizagem_mcn));
+
     children.push(docxSectionTitle('Identificação'));
-    children.push(docxField('Código',            a.codigo));
+    children.push(docxField('Código / ID AE',    a.codigo));
     children.push(docxField('Tipo',              a.tipo));
     children.push(docxField('Área Demandante',   a.area_demandante));
     children.push(docxField('Escola Proponente', a.escola_proponente));
-    children.push(docxField('Eixo/Área Temática',a.eixo_tematico));
+    children.push(docxField('Eixo (oferta)',     eu.eixo || a.eixo_tematico));
+    children.push(docxField('Unidade (oferta)',  eu.unidade));
     children.push(docxField('Status',            a.status));
     children.push(docxField('Nº de Módulos',     String(a.num_modulos || 1)));
+
+    children.push(docxSectionTitle('Planejamento pedagógico'));
+    children.push(docxField('Justificativa da oferta', ''));
+    children.push(docxText(a.justificativa_oferta));
+    children.push(docxField('Amparo legal', ''));
+    children.push(docxText(a.amparo_legal));
+    children.push(docxField('Competência (oferta)', ''));
+    children.push(docxText(a.competencia_texto));
+    children.push(docxField('Objetivos específicos', ''));
+    children.push(docxText(a.objetivos_especificos));
 
     children.push(docxSectionTitle('Detalhamento Pedagógico'));
     children.push(docxField('Objetivo Geral', ''));
@@ -4021,17 +4370,36 @@ async function exportAcoesDOCX(btn) {
     children.push(docxField('Metodologia', ''));
     children.push(docxText(a.metodologia));
 
-    children.push(docxSectionTitle('Informações Operacionais'));
+    children.push(docxSectionTitle('Modalidade, carga e infraestrutura'));
     children.push(docxField('Carga Horária',           `${a.carga_horaria || 0} h/a`));
     children.push(docxField('Modalidade',              a.modalidade));
+    children.push(docxField('Duração',                 a.duracao));
     children.push(docxField('Público-Alvo',            a.publico_alvo));
+    children.push(docxField('Espaço físico',           a.espaco_fisico));
+    children.push(docxField('Plataforma virtual',      a.plataforma_virtual));
     children.push(docxField('Número de Vagas',         String(a.num_vagas || '—')));
 
-    children.push(docxSectionTitle('Certificação'));
+    children.push(docxSectionTitle('Recursos'));
+    children.push(docxField('Recursos materiais', ''));
+    children.push(docxText(a.recursos_materiais));
+    children.push(docxField('Recursos tecnológicos', ''));
+    children.push(docxText(a.recursos_tecnologicos));
+    children.push(docxField('Recursos humanos', ''));
+    children.push(docxText(a.recursos_humanos));
+
+    children.push(docxSectionTitle('Avaliação'));
+    children.push(docxField('Instrumento — aprendizagem', a.instrumento_avaliacao_aprendizagem || a.instrumento_avaliacao));
+    children.push(docxField('Instrumento — reação', a.instrumento_avaliacao_reacao));
+    children.push(docxField('Instrumento — transferência', a.instrumento_avaliacao_transferencia));
+
+    children.push(docxSectionTitle('Matrícula e certificação'));
+    children.push(docxField('Critérios de matrícula', ''));
+    children.push(docxText(a.criterios_matricula));
     children.push(docxField('Frequência Mínima',       `${a.frequencia_minima || '—'}%`));
-    children.push(docxField('Instrumento de Avaliação', a.instrumento_avaliacao));
-    children.push(docxField('Critério de Certificação', ''));
+    children.push(docxField('Critérios de certificação', ''));
     children.push(docxText(a.criterio_certificacao));
+    children.push(docxField('Bibliografia', ''));
+    children.push(docxText(a.bibliografia));
   });
 
   await saveDocx([

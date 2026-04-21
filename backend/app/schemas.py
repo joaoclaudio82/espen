@@ -1,7 +1,9 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
+
+from .cpf_utils import normalize_and_validate_cpf
 
 
 class UserOut(BaseModel):
@@ -23,6 +25,11 @@ class UserCreate(BaseModel):
     acesso: Literal["Administrador", "Gestor", "Usuário"] = "Usuário"
     senha: str = Field(min_length=6)
 
+    @field_validator("cpf")
+    @classmethod
+    def cpf_valido(cls, v: str) -> str:
+        return normalize_and_validate_cpf(v)
+
 
 class UserUpdate(BaseModel):
     nome: str | None = None
@@ -36,6 +43,11 @@ class UserUpdate(BaseModel):
 class LoginRequest(BaseModel):
     cpf: str
     senha: str
+
+    @field_validator("cpf")
+    @classmethod
+    def cpf_valido_login(cls, v: str) -> str:
+        return normalize_and_validate_cpf(v)
 
 
 class TokenResponse(BaseModel):
