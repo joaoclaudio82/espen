@@ -10,7 +10,7 @@ class UserOut(BaseModel):
     nome: str
     email: str
     cargo: str | None = None
-    acesso: Literal["Administrador", "Usuário"]
+    acesso: Literal["Administrador", "Gestor", "Usuário"]
     ativo: bool
     data_registro: datetime
 

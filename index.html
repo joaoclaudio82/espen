@@ -241,7 +241,7 @@ html, body { height: 100%; font-family: 'Inter', sans-serif; background: var(--g
 .filters-bar {
   background: white; border-radius: 10px; padding: 16px 20px;
   box-shadow: var(--shadow); margin-bottom: 18px;
-  display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
+  display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end;
 }
 .filter-group { display: flex; flex-direction: column; gap: 4px; min-width: 150px; }
 .filter-group label { font-size: 11px; font-weight: 700; color: var(--gray-600); text-transform: uppercase; letter-spacing: 0.5px; }
@@ -713,6 +713,7 @@ textarea {
   outline: none; transition: var(--transition); resize: vertical; min-height: 80px;
 }
 textarea:focus { border-color: var(--navy); box-shadow: 0 0 0 3px rgba(26,35,126,0.1); }
+textarea.field-sugerido, input.field-sugerido { border-color: #e65100 !important; box-shadow: 0 0 0 2px rgba(255,102,0,0.18); }
 </style>
 </head>
 <body>
@@ -803,14 +804,7 @@ textarea:focus { border-color: var(--navy); box-shadow: 0 0 0 3px rgba(26,35,126
           <input type="password" id="reg-confirma" placeholder="Repita a senha" autocomplete="new-password">
         </div>
       </div>
-      <div class="form-group">
-        <label>Nível de Acesso</label>
-        <select id="reg-acesso">
-          <option value="Usuário">Usuário</option>
-          <option value="Gestor">Gestor</option>
-          <option value="Administrador">Administrador</option>
-        </select>
-      </div>
+      <p style="font-size:12px;color:var(--gray-600);margin-bottom:12px;">O perfil padrão é <strong>Usuário</strong> (somente leitura). Um administrador precisará aprovar seu cadastro antes do primeiro acesso.</p>
       <button type="submit" class="btn btn-primary"><i class="fas fa-user-plus"></i> Criar Conta</button>
     </form>
   </div>
@@ -902,6 +896,7 @@ textarea:focus { border-color: var(--navy); box-shadow: 0 0 0 3px rgba(26,35,126
 
 <script>
   window.ESPEN_API_BASE = 'https://backend-production-87a7.up.railway.app/api';
+  //window.ESPEN_API_BASE = 'http://127.0.0.1:8001/api';
 </script>
 
 <script>
@@ -916,6 +911,7 @@ const STORAGE_KEYS = {
   trilhas: 'espen_trilhas',
   pdi: 'espen_pdi',
   dashboard: 'espen_dashboard',
+  moderacao: 'espen_moderacao',
 };
 
 const API_BASE = (() => {
@@ -1079,6 +1075,7 @@ function initializeData() {
   if (!getStorage(STORAGE_KEYS.trilhas)) setStorage(STORAGE_KEYS.trilhas, []);
   if (!getStorage(STORAGE_KEYS.pdi)) setStorage(STORAGE_KEYS.pdi, []);
   if (!getStorage(STORAGE_KEYS.dashboard)) setStorage(STORAGE_KEYS.dashboard, []);
+  if (!getStorage(STORAGE_KEYS.moderacao)) setStorage(STORAGE_KEYS.moderacao, []);
 }
 
 // ================================================================
@@ -1334,6 +1331,129 @@ function getAcoesData() {
 // ================================================================
 let currentUser = null;
 
+function isAdminUser() {
+  return currentUser && currentUser.acesso === 'Administrador';
+}
+function isGestorUser() {
+  return currentUser && currentUser.acesso === 'Gestor';
+}
+/** Leitura apenas: perfil Usuário ou Visitante (não gestor nem admin). */
+function isSomenteLeitura() {
+  if (!currentUser) return true;
+  const a = currentUser.acesso;
+  return a === 'Usuário' || a === 'Visitante';
+}
+/** Alterações aplicadas direto (sem fila): só administrador. */
+function podeEditarDireto() {
+  return isAdminUser();
+}
+/** Gestor: envia alterações para aprovação do administrador. */
+function usaFilaModeracao() {
+  return isGestorUser();
+}
+
+function pushFilaModeracao(tipo, payload) {
+  const q = getStorage(STORAGE_KEYS.moderacao) || [];
+  q.push({
+    id: genId(),
+    tipo,
+    payload,
+    solicitante_id: currentUser.id,
+    solicitante_nome: currentUser.nome,
+    criado_em: new Date().toISOString(),
+  });
+  setStorage(STORAGE_KEYS.moderacao, q);
+}
+
+function aplicarItemModeracao(item) {
+  const { tipo, payload } = item;
+  if (tipo === 'matriz_upsert') {
+    const data = getStorage(STORAGE_KEYS.matriz) || [];
+    const rec = payload.registro;
+    if (payload.editId) {
+      const idx = data.findIndex(x => x.id === payload.editId);
+      if (idx >= 0) data[idx] = rec;
+    } else {
+      data.push(rec);
+    }
+    setStorage(STORAGE_KEYS.matriz, data);
+  } else if (tipo === 'matriz_arquivar') {
+    const data = getStorage(STORAGE_KEYS.matriz) || [];
+    const idx = data.findIndex(x => x.id === payload.id);
+    if (idx >= 0) {
+      const anterior = JSON.parse(JSON.stringify(data[idx]));
+      const hist = Array.isArray(anterior.historico) ? anterior.historico : [];
+      hist.push({ ts: Date.now(), usuario: currentUser.nome, acao: 'arquivamento (aprovado)', estado_anterior: anterior });
+      data[idx] = {
+        ...anterior,
+        arquivado: true,
+        arquivado_em: new Date().toISOString(),
+        arquivado_por: currentUser.nome,
+        historico: hist.slice(-50),
+      };
+      setStorage(STORAGE_KEYS.matriz, data);
+    }
+  } else if (tipo === 'acao_upsert') {
+    const data = getStorage(STORAGE_KEYS.acoes) || [];
+    const rec = payload.registro;
+    if (payload.editId) {
+      const idx = data.findIndex(x => x.id === payload.editId);
+      if (idx >= 0) data[idx] = { ...data[idx], ...rec };
+    } else {
+      data.push(rec);
+    }
+    setStorage(STORAGE_KEYS.acoes, data);
+  } else if (tipo === 'acao_excluir') {
+    const data = (getStorage(STORAGE_KEYS.acoes) || []).filter(x => x.id !== payload.id);
+    setStorage(STORAGE_KEYS.acoes, data);
+  } else if (tipo === 'trilha_upsert') {
+    const data = getStorage(STORAGE_KEYS.trilhas) || [];
+    const rec = payload.registro;
+    if (payload.editId) {
+      const idx = data.findIndex(x => x.id === payload.editId);
+      if (idx >= 0) data[idx] = { ...data[idx], ...rec };
+    } else {
+      data.push(rec);
+    }
+    setStorage(STORAGE_KEYS.trilhas, data);
+  } else if (tipo === 'trilha_excluir') {
+    const data = (getStorage(STORAGE_KEYS.trilhas) || []).filter(x => x.id !== payload.id);
+    setStorage(STORAGE_KEYS.trilhas, data);
+  } else if (tipo === 'pdi_upsert') {
+    const data = getStorage(STORAGE_KEYS.pdi) || [];
+    const rec = payload.registro;
+    if (payload.editId) {
+      const idx = data.findIndex(x => x.id === payload.editId);
+      if (idx >= 0) data[idx] = { ...data[idx], ...rec };
+    } else {
+      data.push(rec);
+    }
+    setStorage(STORAGE_KEYS.pdi, data);
+  } else if (tipo === 'pdi_excluir') {
+    const data = (getStorage(STORAGE_KEYS.pdi) || []).filter(x => x.id !== payload.id);
+    setStorage(STORAGE_KEYS.pdi, data);
+  }
+}
+
+window.aprovarModeracaoItem = function(mid) {
+  const q = getStorage(STORAGE_KEYS.moderacao) || [];
+  const item = q.find(x => x.id === mid);
+  if (!item) return;
+  aplicarItemModeracao(item);
+  setStorage(STORAGE_KEYS.moderacao, q.filter(x => x.id !== mid));
+  if (typeof remoteCache !== 'undefined') remoteCache[STORAGE_KEYS.moderacao] = null;
+  showToast('Solicitação aplicada nos dados do sistema.', 'success');
+  if (typeof renderUsuarios === 'function') renderUsuarios();
+};
+
+window.rejeitarModeracaoItem = function(mid) {
+  const q = (getStorage(STORAGE_KEYS.moderacao) || []).filter(x => x.id !== mid);
+  setStorage(STORAGE_KEYS.moderacao, q);
+  if (typeof remoteCache !== 'undefined') remoteCache[STORAGE_KEYS.moderacao] = null;
+  showToast('Solicitação recusada.', 'info');
+  if (typeof renderUsuarios === 'function') renderUsuarios();
+};
+
 function switchAuthTab(tab) {
   document.querySelectorAll('.auth-tab').forEach(t => t.classList.remove('active'));
   document.querySelectorAll('.auth-form').forEach(f => f.classList.remove('active'));
@@ -1391,18 +1511,18 @@ function doRegister() {
   const cargo = document.getElementById('reg-cargo').value;
   const senha = document.getElementById('reg-senha').value;
   const confirma = document.getElementById('reg-confirma').value;
-  const acesso = 'Usuário';
 
   if (!cpf || !nome || !email || !senha || !confirma) {
     showToast('Preencha todos os campos obrigatórios (*)', 'warning'); return;
   }
+  if (!cargo) { showToast('Selecione o cargo', 'warning'); return; }
   if (!validateCPF(cpf)) { showToast('CPF inválido', 'error'); return; }
   if (senha.length < 6) { showToast('Senha deve ter no mínimo 6 caracteres', 'warning'); return; }
   if (senha !== confirma) { showToast('As senhas não coincidem', 'error'); return; }
 
   try {
-    apiRequest('POST', '/auth/register', { cpf, nome, email, cargo, acesso, senha }, false);
-    showToast('Conta criada com sucesso! Faça login.', 'success');
+    apiRequest('POST', '/auth/register', { cpf, nome, email, cargo, acesso: 'Usuário', senha }, false);
+    showToast('Cadastro recebido. Quando um administrador aprovar sua conta, você poderá entrar no sistema.', 'success');
     switchAuthTab('login');
     document.getElementById('login-cpf').value = cpf;
   } catch (err) {
@@ -1574,18 +1694,30 @@ window.closeModalBtn = function() {
   document.getElementById('modal-overlay').classList.remove('active');
 };
 
+/** Preferências do dashboard: ausente = todas as ações; explicit_empty = painel vazio; filtrado = lista de ids. */
 function getDashboardSelection() {
-  if (!currentUser?.id) return [];
+  if (!currentUser?.id) return { mode: 'all', ids: [] };
   const prefs = getStorage(STORAGE_KEYS.dashboard) || [];
   const pref = prefs.find(p => p.user_id === currentUser.id);
-  return Array.isArray(pref?.acao_ids) ? pref.acao_ids : [];
+  if (!pref) return { mode: 'all', ids: [] };
+  if (pref.explicit_empty) return { mode: 'none', ids: [] };
+  const ids = Array.isArray(pref.acao_ids) ? pref.acao_ids : [];
+  /* Preferências antigas: acao_ids vazio sem flag = considerar todas */
+  if (ids.length === 0 && !pref.explicit_empty) return { mode: 'all', ids: [] };
+  if (ids.length === 0) return { mode: 'none', ids: [] };
+  return { mode: 'filtered', ids };
 }
 
-function saveDashboardSelection(actionIds) {
+function saveDashboardSelection(actionIds, opts = {}) {
   if (!currentUser?.id) return;
   const prefs = getStorage(STORAGE_KEYS.dashboard) || [];
   const idx = prefs.findIndex(p => p.user_id === currentUser.id);
-  const record = { id: currentUser.id, user_id: currentUser.id, acao_ids: actionIds };
+  const record = {
+    id: currentUser.id,
+    user_id: currentUser.id,
+    acao_ids: actionIds,
+    explicit_empty: !!opts.explicit_empty,
+  };
   if (idx >= 0) prefs[idx] = record;
   else prefs.push(record);
   setStorage(STORAGE_KEYS.dashboard, prefs);
@@ -1595,14 +1727,19 @@ window.saveDashboardSelectionFromUI = function() {
   const select = document.getElementById('dashboard-action-select');
   if (!select) return;
   const selectedIds = Array.from(select.selectedOptions).map(o => o.value);
-  saveDashboardSelection(selectedIds);
-  showToast(`Filtro salvo com ${selectedIds.length} ação(ões).`, 'success');
+  saveDashboardSelection(selectedIds, { explicit_empty: selectedIds.length === 0 });
+  const msg = selectedIds.length === 0
+    ? 'Filtro salvo: nenhuma ação no painel (KPIs usam todas para métricas gerais).'
+    : `Filtro salvo com ${selectedIds.length} ação(ões).`;
+  showToast(msg, 'success');
   renderDashboard();
 };
 
 window.clearDashboardSelection = function() {
-  saveDashboardSelection([]);
-  showToast('Filtro do dashboard limpo.', 'info');
+  if (!currentUser?.id) return;
+  const prefs = (getStorage(STORAGE_KEYS.dashboard) || []).filter(p => p.user_id !== currentUser.id);
+  setStorage(STORAGE_KEYS.dashboard, prefs);
+  showToast('Filtro do dashboard resetado: todas as ações no painel.', 'info');
   renderDashboard();
 };
 
@@ -1795,6 +1932,10 @@ function transformExcelRows(moduleKey, rows) {
 }
 
 function importExcelData(moduleKey) {
+  if (!isAdminUser()) {
+    showToast('A importação em massa é restrita ao administrador.', 'warning');
+    return;
+  }
   if (!window.XLSX) {
     showToast('Biblioteca de Excel não carregada. Recarregue a página.', 'error');
     return;
@@ -1848,10 +1989,12 @@ function renderDashboard() {
   const trilhas = getStorage(STORAGE_KEYS.trilhas) || [];
   const users = getStorage(STORAGE_KEYS.users) || [];
   const pdis = getStorage(STORAGE_KEYS.pdi) || [];
-  const selectedActionIds = getDashboardSelection();
-  const filteredAcoes = selectedActionIds.length
-    ? acoes.filter(a => selectedActionIds.includes(a.id))
-    : acoes;
+  const dashSel = getDashboardSelection();
+  const filteredAcoes = dashSel.mode === 'none'
+    ? []
+    : dashSel.mode === 'filtered'
+      ? acoes.filter(a => dashSel.ids.includes(a.id))
+      : acoes;
 
   document.getElementById('page-content').innerHTML = `
     <div class="dashboard-filter-wrap">
@@ -1859,10 +2002,10 @@ function renderDashboard() {
       <div class="dashboard-filter-grid">
         <div>
           <select id="dashboard-action-select" multiple>
-            ${acoes.map(a => `<option value="${a.id}" ${selectedActionIds.includes(a.id) ? 'selected' : ''}>${a.nome || 'Ação sem nome'}${a.codigo ? ` (${a.codigo})` : ''}</option>`).join('')}
+            ${acoes.map(a => `<option value="${a.id}" ${dashSel.mode === 'filtered' && dashSel.ids.includes(a.id) ? 'selected' : ''}>${a.nome || 'Ação sem nome'}${a.codigo ? ` (${a.codigo})` : ''}</option>`).join('')}
           </select>
           <div class="text-muted" style="margin-top:6px;">
-            ${selectedActionIds.length ? `${filteredAcoes.length} ação(ões) selecionada(s).` : 'Nenhuma seleção salva: dashboard considera todas as ações.'}
+            ${dashSel.mode === 'all' ? 'Nenhum filtro salvo: o painel lateral lista todas as ações.' : dashSel.mode === 'none' ? 'Filtro explícito: nenhuma ação no painel (use o botão Salvar com lista vazia).' : `${filteredAcoes.length} ação(ões) no painel.`}
           </div>
         </div>
         <div class="dashboard-filter-actions">
@@ -1944,10 +2087,12 @@ function renderDashboard() {
   const unidadeCounts = {};
 
   matriz.forEach(r => {
+    if (r.arquivado) return;
     const e = r.eixo || 'Outros';
     const ek = e.length > 30 ? e.substring(0, 28) + '…' : e;
     eixoCounts[ek] = (eixoCounts[ek] || 0) + 1;
-    if (r.tipologia_complexidade) complexCounts[r.tipologia_complexidade] = (complexCounts[r.tipologia_complexidade] || 0) + 1;
+    const tcx = r.tipologia_complexidade;
+    if (tcx) complexCounts[tcx] = (complexCounts[tcx] || 0) + 1;
     if (r.categoria) catCounts[r.categoria] = (catCounts[r.categoria] || 0) + 1;
     if (r.cargo) cargoCounts[r.cargo] = (cargoCounts[r.cargo] || 0) + 1;
     if (r.unidade) unidadeCounts[r.unidade] = (unidadeCounts[r.unidade] || 0) + 1;
@@ -2057,20 +2202,19 @@ function renderDashboard() {
 // ================================================================
 let matrizPage = 1;
 const matrizPerPage = 15;
-let matrizFilters = { search: '', categoria: '', cargo: '', eixo: '', unidade: '', complexidade: '', matriz: '', subcategoria: '' };
+let matrizFilters = { search: '', categoria: '', cargo: '', eixo: '', unidade: '', complexidade: '', matriz: '', subcategoria: '', mostrarArquivados: false };
 let matrizSort = { field: '', dir: 'asc' };
 
 function renderMatriz() {
-  const isAdmin = currentUser.acesso === 'Administrador';
-  const isGestor = currentUser.acesso === 'Gestor' || isAdmin;
+  const podeAlterar = !isSomenteLeitura();
 
-  document.getElementById('topbar-actions').innerHTML = isGestor ? `
+  document.getElementById('topbar-actions').innerHTML = podeAlterar ? `
     <button class="btn btn-gold btn-sm" onclick="openMatrizForm()">
       <i class="fas fa-plus"></i> <span class="btn-label">Nova Competência</span>
     </button>
-    <button class="btn btn-secondary btn-sm" onclick="importExcelData(STORAGE_KEYS.matriz)" title="Importar Excel">
+    ${isAdminUser() ? `<button class="btn btn-secondary btn-sm" onclick="importExcelData(STORAGE_KEYS.matriz)" title="Importar Excel">
       <i class="fas fa-file-import"></i> <span class="btn-label">Importar Excel</span>
-    </button>
+    </button>` : ''}
     <button class="btn btn-secondary btn-sm" onclick="exportMatrizCSV()" title="Exportar CSV">
       <i class="fas fa-file-csv"></i> <span class="btn-label">CSV</span>
     </button>
@@ -2145,6 +2289,13 @@ function renderMatriz() {
           <option value="">Todas</option><option>2017</option><option>2023</option><option>2026</option>
         </select>
       </div>
+      <div class="filter-group" style="min-width:180px;">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+          <input type="checkbox" ${matrizFilters.mostrarArquivados ? 'checked' : ''} onchange="matrizFilters.mostrarArquivados=this.checked;matrizPage=1;renderMatrizTable()" style="width:16px;height:16px;">
+          Ver arquivadas
+        </label>
+        <span style="font-size:11px;color:var(--gray-500);line-height:1.3;">Exclusões viram arquivamento (histórico preservado).</span>
+      </div>
       <button class="btn btn-secondary btn-sm" onclick="resetMatrizFilters()"><i class="fas fa-times"></i> Limpar</button>
     </div>
     <div class="table-card">
@@ -2155,13 +2306,16 @@ function renderMatriz() {
 }
 
 function resetMatrizFilters() {
-  matrizFilters = { search: '', categoria: '', cargo: '', eixo: '', unidade: '', complexidade: '', matriz: '', subcategoria: '' };
+  matrizFilters = { search: '', categoria: '', cargo: '', eixo: '', unidade: '', complexidade: '', matriz: '', subcategoria: '', mostrarArquivados: false };
   matrizPage = 1;
   renderMatriz();
 }
 
 function getFilteredMatriz() {
   let data = getStorage(STORAGE_KEYS.matriz) || [];
+  if (!matrizFilters.mostrarArquivados) {
+    data = data.filter(r => !r.arquivado);
+  }
   const { search, categoria, cargo, eixo, complexidade, matriz, subcategoria } = matrizFilters;
   if (search) {
     const s = search.toLowerCase();
@@ -2183,8 +2337,7 @@ function renderMatrizTable() {
   if (matrizPage > totalPages && totalPages > 0) matrizPage = totalPages;
   const start = (matrizPage - 1) * matrizPerPage;
   const page = data.slice(start, start + matrizPerPage);
-  const isAdmin = currentUser.acesso === 'Administrador';
-  const isGestor = currentUser.acesso === 'Gestor' || isAdmin;
+  const podeAlterar = !isSomenteLeitura();
 
   const complexColors = { Básico: 'green', Intermediário: 'gold', Avançado: 'blue' };
   const catColors = { Especialista: 'blue', Geral: 'gray' };
@@ -2201,14 +2354,14 @@ function renderMatrizTable() {
             <th class="hide-mobile">Conhecimento Crítico</th>
             <th>Complexidade</th>
             <th class="hide-mobile">Matriz</th>
-            ${isGestor ? '<th style="width:80px;">Ações</th>' : ''}
+            ${podeAlterar ? '<th style="width:96px;">Ações</th>' : ''}
           </tr>
         </thead>
         <tbody>
   `;
 
   if (page.length === 0) {
-    html += `<tr><td colspan="${isGestor ? 8 : 7}"><div class="empty-state"><i class="fas fa-search"></i><h3>Nenhum resultado</h3><p>Tente ajustar os filtros de busca</p></div></td></tr>`;
+    html += `<tr><td colspan="${podeAlterar ? 8 : 7}"><div class="empty-state"><i class="fas fa-search"></i><h3>Nenhum resultado</h3><p>Tente ajustar os filtros de busca</p></div></td></tr>`;
   } else {
     page.forEach(r => {
       const cc = complexColors[r.tipologia_complexidade] || 'gray';
@@ -2217,6 +2370,7 @@ function renderMatrizTable() {
         <tr onclick="viewMatrizDetail('${r.id}')" style="cursor:pointer;">
           <td>
             <span class="text-truncate fw-600" title="${r.competencia||''}" style="max-width:180px;">${r.competencia||'—'}</span>
+            ${r.arquivado ? '<span class="badge badge-orange" style="margin-left:6px;">Arquivada</span>' : ''}
             <div class="show-mobile-only" style="display:none;margin-top:4px;display:none;">
               <span class="badge badge-${nc}" style="margin-right:4px;">${r.categoria||''}</span>
               <span class="badge badge-${cc}">${r.tipologia_complexidade||''}</span>
@@ -2228,10 +2382,10 @@ function renderMatrizTable() {
           <td class="hide-mobile" style="font-size:12px;max-width:160px;" title="${r.conhecimento||''}">${(r.conhecimento||'—').substring(0,35)}${r.conhecimento&&r.conhecimento.length>35?'…':''}</td>
           <td><span class="badge badge-${cc}">${r.tipologia_complexidade||'—'}</span></td>
           <td class="hide-mobile"><span class="badge badge-purple">${r.matriz||'—'}</span></td>
-          ${isGestor ? `<td onclick="event.stopPropagation()">
-            <div style="display:flex;gap:4px;">
-              <button class="btn btn-secondary btn-sm" onclick="editMatriz('${r.id}')" title="Editar"><i class="fas fa-edit"></i></button>
-              <button class="btn btn-danger btn-sm" onclick="deleteMatriz('${r.id}')" title="Excluir"><i class="fas fa-trash"></i></button>
+          ${podeAlterar ? `<td onclick="event.stopPropagation()">
+            <div style="display:flex;gap:4px;align-items:center;">
+              <button class="btn btn-secondary btn-sm" onclick="editMatriz('${r.id}')" title="Editar" ${r.arquivado ? 'disabled' : ''}><i class="fas fa-edit"></i></button>
+              <button class="btn btn-danger btn-sm" onclick="deleteMatriz('${r.id}')" title="Arquivar competência" ${r.arquivado ? 'disabled' : ''}><i class="fas fa-archive"></i></button>
             </div>
           </td>` : ''}
         </tr>
@@ -2294,11 +2448,22 @@ function viewMatrizDetail(id) {
       <div class="detail-label">Objetivo de Aprendizagem</div>
       <div class="detail-value" style="line-height:1.6;">${r.objetivo||'—'}</div>
     </div>
+    ${Array.isArray(r.historico) && r.historico.length ? `
+    <div class="divider"></div>
+    <div class="detail-field">
+      <div class="detail-label">Histórico de alterações (${r.historico.length})</div>
+      <div class="detail-value" style="font-size:12px;max-height:160px;overflow-y:auto;">
+        ${r.historico.slice().reverse().slice(0, 12).map(h => `<div style="margin-bottom:8px;padding:8px;background:var(--gray-50);border-radius:6px;">
+          <strong>${new Date(h.ts).toLocaleString('pt-BR')}</strong> — ${h.usuario || '—'} — ${h.acao || 'alteração'}
+        </div>`).join('')}
+      </div>
+    </div>` : ''}
   `;
   openModal('Detalhe da Competência', body, '<button class="btn btn-secondary" onclick="closeModalBtn()">Fechar</button>', true);
 }
 
 function openMatrizForm(id = null) {
+  if (isSomenteLeitura()) return;
   const data = getStorage(STORAGE_KEYS.matriz) || [];
   const r = id ? data.find(x => x.id === id) : {};
   const v = r || {};
@@ -2411,11 +2576,47 @@ function saveMatriz(id) {
     showToast('Preencha os campos obrigatórios (*)', 'warning'); return;
   }
   const data = getStorage(STORAGE_KEYS.matriz) || [];
+  let registro;
   if (id) {
     const idx = data.findIndex(x => x.id === id);
-    if (idx >= 0) { data[idx] = { ...data[idx], ...fields }; }
+    if (idx < 0) return;
+    const anterior = JSON.parse(JSON.stringify(data[idx]));
+    const hist = Array.isArray(anterior.historico) ? anterior.historico : [];
+    hist.push({
+      ts: Date.now(),
+      usuario: currentUser.nome,
+      acao: 'edição',
+      estado_anterior: anterior,
+    });
+    registro = {
+      ...anterior,
+      ...fields,
+      historico: hist.slice(-50),
+      atualizado_em: new Date().toISOString(),
+      atualizado_por: currentUser.nome,
+    };
+    if (usaFilaModeracao()) {
+      pushFilaModeracao('matriz_upsert', { editId: id, registro });
+      closeModalBtn();
+      showToast('Alteração enviada para aprovação do administrador.', 'info');
+      return;
+    }
+    data[idx] = registro;
   } else {
-    data.push({ id: genId(), ...fields });
+    registro = {
+      id: genId(),
+      ...fields,
+      historico: [],
+      criado_em: new Date().toISOString(),
+      criado_por: currentUser.nome,
+    };
+    if (usaFilaModeracao()) {
+      pushFilaModeracao('matriz_upsert', { editId: null, registro });
+      closeModalBtn();
+      showToast('Cadastro enviado para aprovação do administrador.', 'info');
+      return;
+    }
+    data.push(registro);
   }
   setStorage(STORAGE_KEYS.matriz, data);
   closeModalBtn();
@@ -2424,10 +2625,28 @@ function saveMatriz(id) {
 }
 
 function deleteMatriz(id) {
-  if (!confirm('Deseja excluir esta competência da matriz?')) return;
-  const data = (getStorage(STORAGE_KEYS.matriz) || []).filter(x => x.id !== id);
+  if (!confirm('Arquivar esta competência? Ela deixa de aparecer na lista principal, mas permanece no histórico.')) return;
+  if (usaFilaModeracao()) {
+    pushFilaModeracao('matriz_arquivar', { id });
+    showToast('Solicitação de arquivamento enviada ao administrador.', 'info');
+    renderMatrizTable();
+    return;
+  }
+  const data = getStorage(STORAGE_KEYS.matriz) || [];
+  const idx = data.findIndex(x => x.id === id);
+  if (idx < 0) return;
+  const anterior = JSON.parse(JSON.stringify(data[idx]));
+  const hist = Array.isArray(anterior.historico) ? anterior.historico : [];
+  hist.push({ ts: Date.now(), usuario: currentUser.nome, acao: 'arquivamento', estado_anterior: anterior });
+  data[idx] = {
+    ...anterior,
+    arquivado: true,
+    arquivado_em: new Date().toISOString(),
+    arquivado_por: currentUser.nome,
+    historico: hist.slice(-50),
+  };
   setStorage(STORAGE_KEYS.matriz, data);
-  showToast('Competência excluída.', 'success');
+  showToast('Competência arquivada.', 'success');
   renderMatrizTable();
 }
 
@@ -2445,13 +2664,70 @@ function exportMatrizCSV() {
 // ================================================================
 // AÇÕES EDUCATIVAS
 // ================================================================
-let acoesFilter = { search: '', modalidade: '', status: '' };
+let acoesFilter = { search: '', modalidade: '', status: '', competenciaMatrizId: '' };
+
+function tokenizarTexto(t) {
+  return String(t || '')
+    .toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .split(/[^a-z0-9áéíóúâêôãõç]+/i)
+    .filter(w => w.length > 2);
+}
+
+function similaridadeJaccardTokens(a, b) {
+  const A = new Set(a);
+  const B = new Set(b);
+  let inter = 0;
+  for (const x of A) if (B.has(x)) inter++;
+  const u = A.size + B.size - inter;
+  return u ? inter / u : 0;
+}
+
+window.sugerirCamposAcaoPorMatriz = function() {
+  const nomeEl = document.getElementById('af-nome');
+  const objEl = document.getElementById('af-objetivo');
+  if (!nomeEl || !objEl) return;
+  const q = [...tokenizarTexto(nomeEl.value), ...tokenizarTexto(objEl.value)];
+  if (q.length < 2) {
+    showToast('Informe nome e/ou objetivo da ação para buscar similaridade na matriz.', 'warning');
+    return;
+  }
+  const matriz = (getStorage(STORAGE_KEYS.matriz) || []).filter(m => !m.arquivado);
+  let best = null;
+  let bestScore = 0;
+  matriz.forEach(m => {
+    const pool = [...tokenizarTexto(m.competencia), ...tokenizarTexto(m.objetivo), ...tokenizarTexto(m.conhecimento), ...tokenizarTexto(m.unidade)];
+    const s = similaridadeJaccardTokens(q, pool);
+    if (s > bestScore) {
+      bestScore = s;
+      best = m;
+    }
+  });
+  if (!best || bestScore < 0.03) {
+    showToast('Nenhuma competência com similaridade suficiente. Ajuste o nome ou o objetivo.', 'warning');
+    return;
+  }
+  const setIfEmpty = (id, val) => {
+    const el = document.getElementById(id);
+    if (!el || !val) return;
+    if (!String(el.value || '').trim()) {
+      el.value = val;
+      el.classList.add('field-sugerido');
+    }
+  };
+  setIfEmpty('af-eixo', best.eixo || '');
+  setIfEmpty('af-ementa', best.objetivo ? `Com base na competência: ${best.competencia}\n\n${best.objetivo}`.slice(0, 4000) : '');
+  setIfEmpty('af-metodologia', 'Estudo de caso, reflexão guiada e práticas alinhadas às diretrizes da MCN.');
+  setIfEmpty('af-conteudo', best.conhecimento ? `Eixo: ${best.eixo || '—'}\nUnidade temática: ${best.unidade || '—'}\nConhecimento crítico: ${best.conhecimento}` : '');
+  document.querySelectorAll('input[name="af-comp-vinc"]').forEach(cb => { cb.checked = cb.value === best.id; });
+  showToast(`Sugestão aplicada a partir da competência (${(bestScore * 100).toFixed(0)}% similaridade). Revise os campos destacados.`, 'success');
+};
 
 function renderAcoes() {
-  const isGestor = currentUser.acesso !== 'Usuário';
+  const podeAlterar = !isSomenteLeitura();
   document.getElementById('topbar-actions').innerHTML = `
-    ${isGestor ? `<button class="btn btn-gold btn-sm" onclick="openAcaoForm()"><i class="fas fa-plus"></i> <span class="btn-label">Nova Ação</span></button>` : ''}
-    ${isGestor ? `<button class="btn btn-secondary btn-sm" onclick="importExcelData(STORAGE_KEYS.acoes)" title="Importar Excel"><i class="fas fa-file-import"></i> <span class="btn-label">Importar Excel</span></button>` : ''}
+    ${podeAlterar ? `<button class="btn btn-gold btn-sm" onclick="openAcaoForm()"><i class="fas fa-plus"></i> <span class="btn-label">Nova Ação</span></button>` : ''}
+    ${isAdminUser() ? `<button class="btn btn-secondary btn-sm" onclick="importExcelData(STORAGE_KEYS.acoes)" title="Importar Excel"><i class="fas fa-file-import"></i> <span class="btn-label">Importar Excel</span></button>` : ''}
     <button class="btn btn-secondary btn-sm" onclick="exportAcoesDOCX(this)" title="Exportar DOCX (Word)" style="color:#2b579a;">
       <i class="fas fa-file-word"></i> <span class="btn-label">DOCX</span>
     </button>
@@ -2473,7 +2749,7 @@ function renderAcoes() {
         <label>Modalidade</label>
         <select onchange="acoesFilter.modalidade=this.value;renderAcoesGrid()">
           <option value="">Todas</option>
-          <option>EaD</option><option>Presencial</option><option>Híbrido</option>
+          <option>EaD</option><option>Presencial</option><option>Semipresencial</option><option>Híbrido</option>
         </select>
       </div>
       <div class="filter-group">
@@ -2483,7 +2759,14 @@ function renderAcoes() {
           <option>Ativo</option><option>Inativo</option><option>Em elaboração</option>
         </select>
       </div>
-      <button class="btn btn-secondary btn-sm" onclick="acoesFilter={search:'',modalidade:'',status:''};renderAcoes()"><i class="fas fa-times"></i></button>
+      <div class="filter-group" style="min-width:220px;">
+        <label>Competência (matriz)</label>
+        <select id="ac-filter-comp" onchange="acoesFilter.competenciaMatrizId=this.value;renderAcoesGrid()">
+          <option value="">Todas</option>
+          ${(getStorage(STORAGE_KEYS.matriz)||[]).filter(m => !m.arquivado).map(m => `<option value="${m.id}">${(m.competencia||'').substring(0,70)}${(m.competencia||'').length>70?'…':''}</option>`).join('')}
+        </select>
+      </div>
+      <button class="btn btn-secondary btn-sm" onclick="acoesFilter={search:'',modalidade:'',status:'',competenciaMatrizId:''};var el=document.getElementById('ac-filter-comp');if(el)el.value='';renderAcoes()"><i class="fas fa-times"></i></button>
     </div>
     <div id="acoes-grid"></div>
   `;
@@ -2498,13 +2781,17 @@ function renderAcoesGrid() {
   }
   if (acoesFilter.modalidade) data = data.filter(a => a.modalidade === acoesFilter.modalidade);
   if (acoesFilter.status) data = data.filter(a => a.status === acoesFilter.status);
-  
-  const isGestor = currentUser.acesso !== 'Usuário';
-  const mColors = { 'EaD': 'blue', 'Presencial': 'green', 'Híbrido': 'gold' };
+  if (acoesFilter.competenciaMatrizId) {
+    const cid = acoesFilter.competenciaMatrizId;
+    data = data.filter(a => (a.competencias_vinculadas || []).includes(cid));
+  }
+
+  const podeAlterar = !isSomenteLeitura();
+  const mColors = { 'EaD': 'blue', 'Presencial': 'green', 'Semipresencial': 'orange', 'Híbrido': 'gold' };
   const sColors = { 'Ativo': 'green', 'Inativo': 'red', 'Em elaboração': 'gold' };
 
   if (data.length === 0) {
-    document.getElementById('acoes-grid').innerHTML = `<div class="empty-state"><i class="fas fa-book-open"></i><h3>Nenhuma ação encontrada</h3><p>Adicione ações educativas para visualizar aqui</p><button class="btn btn-primary" onclick="openAcaoForm()"><i class="fas fa-plus"></i> Nova Ação</button></div>`;
+    document.getElementById('acoes-grid').innerHTML = `<div class="empty-state"><i class="fas fa-book-open"></i><h3>Nenhuma ação encontrada</h3><p>Adicione ações educativas para visualizar aqui</p>${!isSomenteLeitura() ? '<button class="btn btn-primary" onclick="openAcaoForm()"><i class="fas fa-plus"></i> Nova Ação</button>' : ''}</div>`;
     return;
   }
 
@@ -2516,7 +2803,7 @@ function renderAcoesGrid() {
             <span class="badge badge-purple" style="margin-bottom:6px;">${a.codigo||'—'}</span>
             <h3 style="font-size:14px;font-weight:700;color:var(--gray-900);line-height:1.4;">${a.nome||'—'}</h3>
           </div>
-          ${isGestor ? `<div style="display:flex;gap:4px;flex-shrink:0;margin-left:8px;" onclick="event.stopPropagation()">
+          ${podeAlterar ? `<div style="display:flex;gap:4px;flex-shrink:0;margin-left:8px;" onclick="event.stopPropagation()">
             <button class="btn btn-secondary btn-sm" onclick="editAcao('${a.id}')"><i class="fas fa-edit"></i></button>
             <button class="btn btn-danger btn-sm" onclick="deleteAcao('${a.id}')"><i class="fas fa-trash"></i></button>
           </div>` : ''}
@@ -2541,7 +2828,7 @@ function viewAcaoDetail(id) {
   const data = getStorage(STORAGE_KEYS.acoes) || [];
   const a = data.find(x => x.id === id);
   if (!a) return;
-  const mColors = { 'EaD': 'blue', 'Presencial': 'green', 'Híbrido': 'gold' };
+  const mColors = { 'EaD': 'blue', 'Presencial': 'green', 'Semipresencial': 'orange', 'Híbrido': 'gold' };
   const sColors = { 'Ativo': 'green', 'Inativo': 'red', 'Em elaboração': 'gold' };
   const body = `
     <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px;">
@@ -2576,14 +2863,24 @@ function viewAcaoDetail(id) {
     </div>
     <div class="detail-field"><div class="detail-label">Critério de Certificação</div><div class="detail-value">${a.criterio_certificacao||'—'}</div></div>
     <div class="detail-field"><div class="detail-label">Metodologia</div><div class="detail-value">${a.metodologia||'—'}</div></div>
+    ${(a.competencias_vinculadas && a.competencias_vinculadas.length) ? `
+    <div class="divider"></div>
+    <div class="detail-field">
+      <div class="detail-label">Competências da MCN vinculadas</div>
+      <div class="detail-value" style="font-size:13px;line-height:1.5;">${(a.competencias_vinculadas||[]).map(cid => {
+        const m = (getStorage(STORAGE_KEYS.matriz)||[]).find(x => x.id === cid);
+        return m ? `• ${m.competencia}` : `• (${cid})`;
+      }).join('<br>')}</div>
+    </div>` : ''}
   `;
   openModal(a.nome, body, '<button class="btn btn-secondary" onclick="closeModalBtn()">Fechar</button>', true);
 }
 
 function openAcaoForm(id = null) {
+  if (isSomenteLeitura()) return;
   const data = getStorage(STORAGE_KEYS.acoes) || [];
   const a = id ? (data.find(x => x.id === id) || {}) : {};
-  const modOpts = ['EaD','Presencial','Híbrido'].map(o => `<option ${a.modalidade===o?'selected':''}>${o}</option>`).join('');
+  const modOpts = ['EaD','Presencial','Semipresencial','Híbrido'].map(o => `<option ${a.modalidade===o?'selected':''}>${o}</option>`).join('');
   const statOpts = ['Ativo','Inativo','Em elaboração'].map(o => `<option ${a.status===o?'selected':''}>${o}</option>`).join('');
   const tipoOpts = ['Curso','Módulo','Disciplina','Oficina','Seminário','Palestra'].map(o => `<option ${a.tipo===o?'selected':''}>${o}</option>`).join('');
 
@@ -2602,10 +2899,24 @@ function openAcaoForm(id = null) {
     </div>
     <div class="form-section">
       <div class="form-section-title">Detalhamento Pedagógico</div>
+      <p style="font-size:12px;color:var(--gray-600);margin:-4px 0 10px;">Campos com borda laranja podem ser preenchidos automaticamente pela similaridade com a matriz (botão abaixo).</p>
+      <div style="margin-bottom:12px;">
+        <button type="button" class="btn btn-secondary btn-sm" onclick="sugerirCamposAcaoPorMatriz()"><i class="fas fa-magic"></i> Preencher por similaridade com a matriz</button>
+      </div>
       <div class="form-group"><label>Objetivo Geral *</label><textarea id="af-objetivo" rows="3">${a.objetivo_geral||''}</textarea></div>
       <div class="form-group"><label>Ementa</label><textarea id="af-ementa" rows="3">${a.ementa||''}</textarea></div>
       <div class="form-group"><label>Conteúdo Programático</label><textarea id="af-conteudo" rows="5">${a.conteudo_programatico||''}</textarea></div>
       <div class="form-group"><label>Metodologia</label><textarea id="af-metodologia" rows="2">${a.metodologia||''}</textarea></div>
+    </div>
+    <div class="form-section">
+      <div class="form-section-title">Competências da MCN (vínculo opcional)</div>
+      <div style="max-height:160px;overflow-y:auto;border:1.5px solid var(--gray-200);border-radius:8px;padding:10px;">
+        ${(getStorage(STORAGE_KEYS.matriz)||[]).filter(m => !m.arquivado).slice(0, 150).map(m => `
+        <label style="display:flex;align-items:flex-start;gap:8px;font-size:12px;padding:4px 0;cursor:pointer;">
+          <input type="checkbox" name="af-comp-vinc" value="${m.id}" style="margin-top:3px;" ${(a.competencias_vinculadas||[]).includes(m.id)?'checked':''}>
+          <span>${(m.competencia||'').substring(0, 120)}${(m.competencia||'').length>120?'…':''}</span>
+        </label>`).join('') || '<p style="font-size:12px;color:var(--gray-500);">Nenhum registro na matriz.</p>'}
+      </div>
     </div>
     <div class="form-section">
       <div class="form-section-title">Informações Operacionais</div>
@@ -2640,6 +2951,7 @@ function saveAcao(id) {
   const objetivo = document.getElementById('af-objetivo').value.trim();
   const ch = document.getElementById('af-ch').value;
   if (!nome || !objetivo || !ch) { showToast('Preencha os campos obrigatórios (*)', 'warning'); return; }
+  const competencias_vinculadas = Array.from(document.querySelectorAll('input[name="af-comp-vinc"]:checked')).map(cb => cb.value);
   const rec = {
     nome, objetivo_geral: objetivo,
     codigo: document.getElementById('af-codigo').value.trim(),
@@ -2659,13 +2971,29 @@ function saveAcao(id) {
     frequencia_minima: parseInt(document.getElementById('af-freq').value)||90,
     instrumento_avaliacao: document.getElementById('af-instrumento').value.trim(),
     criterio_certificacao: document.getElementById('af-criterio').value.trim(),
+    competencias_vinculadas,
   };
   const data = getStorage(STORAGE_KEYS.acoes) || [];
   if (id) {
     const idx = data.findIndex(x => x.id === id);
-    if (idx >= 0) data[idx] = { ...data[idx], ...rec };
+    if (idx < 0) return;
+    const merged = { ...data[idx], ...rec };
+    if (usaFilaModeracao()) {
+      pushFilaModeracao('acao_upsert', { editId: id, registro: merged });
+      closeModalBtn();
+      showToast('Alteração enviada para aprovação do administrador.', 'info');
+      return;
+    }
+    data[idx] = merged;
   } else {
-    data.push({ id: genId(), ...rec, data_criacao: new Date().toISOString().split('T')[0] });
+    const novo = { id: genId(), ...rec, data_criacao: new Date().toISOString().split('T')[0] };
+    if (usaFilaModeracao()) {
+      pushFilaModeracao('acao_upsert', { editId: null, registro: novo });
+      closeModalBtn();
+      showToast('Cadastro enviado para aprovação do administrador.', 'info');
+      return;
+    }
+    data.push(novo);
   }
   setStorage(STORAGE_KEYS.acoes, data);
   closeModalBtn();
@@ -2675,6 +3003,12 @@ function saveAcao(id) {
 
 function deleteAcao(id) {
   if (!confirm('Deseja excluir esta ação educativa?')) return;
+  if (usaFilaModeracao()) {
+    pushFilaModeracao('acao_excluir', { id });
+    showToast('Solicitação de exclusão enviada ao administrador.', 'info');
+    renderAcoesGrid();
+    return;
+  }
   const data = (getStorage(STORAGE_KEYS.acoes) || []).filter(x => x.id !== id);
   setStorage(STORAGE_KEYS.acoes, data);
   showToast('Ação excluída.', 'success');
@@ -2685,10 +3019,10 @@ function deleteAcao(id) {
 // TRILHAS DE APRENDIZAGEM
 // ================================================================
 function renderTrilhas() {
-  const isGestor = currentUser.acesso !== 'Usuário';
-  document.getElementById('topbar-actions').innerHTML = isGestor ? `
+  const podeAlterar = !isSomenteLeitura();
+  document.getElementById('topbar-actions').innerHTML = podeAlterar ? `
     <button class="btn btn-gold btn-sm" onclick="openTrilhaForm()"><i class="fas fa-plus"></i> <span class="btn-label">Nova Trilha</span></button>
-    <button class="btn btn-secondary btn-sm" onclick="importExcelData(STORAGE_KEYS.trilhas)" title="Importar Excel"><i class="fas fa-file-import"></i> <span class="btn-label">Importar Excel</span></button>
+    ${isAdminUser() ? `<button class="btn btn-secondary btn-sm" onclick="importExcelData(STORAGE_KEYS.trilhas)" title="Importar Excel"><i class="fas fa-file-import"></i> <span class="btn-label">Importar Excel</span></button>` : ''}
   ` : '';
 
   const trilhas = getStorage(STORAGE_KEYS.trilhas) || [];
@@ -2708,7 +3042,7 @@ function renderTrilhas() {
       <i class="fas fa-route"></i>
       <h3>Nenhuma trilha cadastrada</h3>
       <p>Crie trilhas combinando ações educativas em sequência lógica.</p>
-      ${isGestor ? `<button class="btn btn-primary" onclick="openTrilhaForm()"><i class="fas fa-plus"></i> Criar Primeira Trilha</button>` : ''}
+      ${podeAlterar ? `<button class="btn btn-primary" onclick="openTrilhaForm()"><i class="fas fa-plus"></i> Criar Primeira Trilha</button>` : ''}
     </div>`;
   } else {
     html += `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:18px;">`;
@@ -2728,7 +3062,7 @@ function renderTrilhas() {
                 ${t.cargo_alvo ? `<span class="badge badge-blue">${t.cargo_alvo.split(' ')[0]}</span>` : ''}
               </div>
             </div>
-            ${isGestor ? `<div style="display:flex;gap:4px;">
+            ${podeAlterar ? `<div style="display:flex;gap:4px;">
               <button class="btn btn-secondary btn-sm" onclick="editTrilha('${t.id}')"><i class="fas fa-edit"></i></button>
               <button class="btn btn-danger btn-sm" onclick="deleteTrilha('${t.id}')"><i class="fas fa-trash"></i></button>
             </div>` : ''}
@@ -2836,9 +3170,24 @@ function saveTrilha(id) {
   const data = getStorage(STORAGE_KEYS.trilhas) || [];
   if (id) {
     const idx = data.findIndex(x => x.id === id);
-    if (idx >= 0) data[idx] = { ...data[idx], ...rec };
+    if (idx < 0) return;
+    const merged = { ...data[idx], ...rec };
+    if (usaFilaModeracao()) {
+      pushFilaModeracao('trilha_upsert', { editId: id, registro: merged });
+      closeModalBtn();
+      showToast('Alteração enviada para aprovação do administrador.', 'info');
+      return;
+    }
+    data[idx] = merged;
   } else {
-    data.push({ id: genId(), ...rec, data_criacao: new Date().toISOString() });
+    const novo = { id: genId(), ...rec, data_criacao: new Date().toISOString() };
+    if (usaFilaModeracao()) {
+      pushFilaModeracao('trilha_upsert', { editId: null, registro: novo });
+      closeModalBtn();
+      showToast('Cadastro enviado para aprovação do administrador.', 'info');
+      return;
+    }
+    data.push(novo);
   }
   setStorage(STORAGE_KEYS.trilhas, data);
   closeModalBtn();
@@ -2848,6 +3197,12 @@ function saveTrilha(id) {
 
 function deleteTrilha(id) {
   if (!confirm('Deseja excluir esta trilha?')) return;
+  if (usaFilaModeracao()) {
+    pushFilaModeracao('trilha_excluir', { id });
+    showToast('Solicitação enviada ao administrador.', 'info');
+    renderTrilhas();
+    return;
+  }
   const data = (getStorage(STORAGE_KEYS.trilhas) || []).filter(x => x.id !== id);
   setStorage(STORAGE_KEYS.trilhas, data);
   showToast('Trilha excluída.', 'success');
@@ -2858,10 +3213,10 @@ function deleteTrilha(id) {
 // PLANO DE ENSINO
 // ================================================================
 function renderPDI() {
-  const isGestor = currentUser.acesso !== 'Usuário';
+  const podeAlterar = !isSomenteLeitura();
   document.getElementById('topbar-actions').innerHTML = `
-    ${isGestor ? `<button class="btn btn-gold btn-sm" onclick="openPDIForm()"><i class="fas fa-plus"></i> <span class="btn-label">Novo Plano</span></button>` : ''}
-    ${isGestor ? `<button class="btn btn-secondary btn-sm" onclick="importExcelData(STORAGE_KEYS.pdi)" title="Importar Excel"><i class="fas fa-file-import"></i> <span class="btn-label">Importar Excel</span></button>` : ''}
+    ${podeAlterar ? `<button class="btn btn-gold btn-sm" onclick="openPDIForm()"><i class="fas fa-plus"></i> <span class="btn-label">Novo Plano</span></button>` : ''}
+    ${isAdminUser() ? `<button class="btn btn-secondary btn-sm" onclick="importExcelData(STORAGE_KEYS.pdi)" title="Importar Excel"><i class="fas fa-file-import"></i> <span class="btn-label">Importar Excel</span></button>` : ''}
     <button class="btn btn-secondary btn-sm" onclick="exportPDIDOCX(this)" title="Exportar DOCX (Word)" style="color:#2b579a;">
       <i class="fas fa-file-word"></i> <span class="btn-label">DOCX</span>
     </button>
@@ -2886,7 +3241,7 @@ function renderPDI() {
       <i class="fas fa-clipboard-list"></i>
       <h3>Nenhum plano de ensino cadastrado</h3>
       <p>Crie planos de ensino para acompanhar o progresso dos servidores.</p>
-      ${isGestor ? `<button class="btn btn-primary" onclick="openPDIForm()"><i class="fas fa-plus"></i> Criar Primeiro Plano</button>` : ''}
+      ${podeAlterar ? `<button class="btn btn-primary" onclick="openPDIForm()"><i class="fas fa-plus"></i> Criar Primeiro Plano</button>` : ''}
     </div>`;
   } else {
     html += `<div style="display:grid;gap:16px;">`;
@@ -2910,7 +3265,7 @@ function renderPDI() {
             </div>
             <div style="display:flex;align-items:center;gap:10px;">
               <span class="badge badge-${sc}">${p.status||'—'}</span>
-              ${isGestor ? `<button class="btn btn-secondary btn-sm" onclick="editPDI('${p.id}')"><i class="fas fa-edit"></i></button>
+              ${podeAlterar ? `<button class="btn btn-secondary btn-sm" onclick="editPDI('${p.id}')"><i class="fas fa-edit"></i></button>
               <button class="btn btn-danger btn-sm" onclick="deletePDI('${p.id}')"><i class="fas fa-trash"></i></button>` : ''}
             </div>
           </div>
@@ -2957,6 +3312,7 @@ function renderPDI() {
 }
 
 function updatePDIProgress(pdiId, acaoId, checked) {
+  if (isSomenteLeitura()) return;
   const pdis = getStorage(STORAGE_KEYS.pdi) || [];
   const trilhas = getStorage(STORAGE_KEYS.trilhas) || [];
   const idx = pdis.findIndex(p => p.id === pdiId);
@@ -3028,6 +3384,8 @@ function savePDI(id) {
   const trilhaId = document.getElementById('pf-trilha').value;
   const trilhas = getStorage(STORAGE_KEYS.trilhas) || [];
   const trilha = trilhas.find(t => t.id === trilhaId);
+  const data = getStorage(STORAGE_KEYS.pdi) || [];
+  const prev = id ? data.find(x => x.id === id) : null;
   const rec = {
     usuario_id: userId,
     trilha_id: trilhaId,
@@ -3035,14 +3393,30 @@ function savePDI(id) {
     data_meta: document.getElementById('pf-meta').value,
     status: document.getElementById('pf-status').value,
     progresso: parseInt(document.getElementById('pf-progresso').value)||0,
-    acoes_status: trilha ? (trilha.acoes_vinculadas||[]).reduce((obj, aid) => ({...obj, [aid]: false}), {}) : {},
+    acoes_status: prev && prev.acoes_status
+      ? prev.acoes_status
+      : (trilha ? (trilha.acoes_vinculadas||[]).reduce((obj, aid) => ({...obj, [aid]: false}), {}) : {}),
   };
-  const data = getStorage(STORAGE_KEYS.pdi) || [];
   if (id) {
     const idx = data.findIndex(x => x.id === id);
-    if (idx >= 0) data[idx] = { ...data[idx], ...rec };
+    if (idx < 0) return;
+    const merged = { ...data[idx], ...rec };
+    if (usaFilaModeracao()) {
+      pushFilaModeracao('pdi_upsert', { editId: id, registro: merged });
+      closeModalBtn();
+      showToast('Alteração enviada para aprovação do administrador.', 'info');
+      return;
+    }
+    data[idx] = merged;
   } else {
-    data.push({ id: genId(), ...rec, data_criacao: new Date().toISOString() });
+    const novo = { id: genId(), ...rec, data_criacao: new Date().toISOString() };
+    if (usaFilaModeracao()) {
+      pushFilaModeracao('pdi_upsert', { editId: null, registro: novo });
+      closeModalBtn();
+      showToast('Cadastro enviado para aprovação do administrador.', 'info');
+      return;
+    }
+    data.push(novo);
   }
   setStorage(STORAGE_KEYS.pdi, data);
   closeModalBtn();
@@ -3052,6 +3426,12 @@ function savePDI(id) {
 
 function deletePDI(id) {
   if (!confirm('Deseja excluir este plano de ensino?')) return;
+  if (usaFilaModeracao()) {
+    pushFilaModeracao('pdi_excluir', { id });
+    showToast('Solicitação enviada ao administrador.', 'info');
+    renderPDI();
+    return;
+  }
   const data = (getStorage(STORAGE_KEYS.pdi) || []).filter(x => x.id !== id);
   setStorage(STORAGE_KEYS.pdi, data);
   showToast('Plano de ensino excluído.', 'success');
@@ -3070,7 +3450,29 @@ function renderUsuarios() {
     <button class="btn btn-gold btn-sm" onclick="openUserForm()"><i class="fas fa-user-plus"></i> <span class="btn-label">Novo Usuário</span></button>
   `;
   const users = getStorage(STORAGE_KEYS.users) || [];
-  const acessoColors = { Administrador: 'blue', Gestor: 'gold', Usuário: 'green', usuário: 'green' };
+  const fila = getStorage(STORAGE_KEYS.moderacao) || [];
+  const acessoColors = { Administrador: 'blue', Gestor: 'gold', Usuário: 'green', usuário: 'green', Visitante: 'gray' };
+
+  const filaHtml = fila.length ? `
+    <div class="table-card" style="margin-bottom:20px;">
+      <div style="padding:16px 20px;border-bottom:1px solid var(--gray-100);">
+        <div class="section-title" style="font-size:16px;">Fila de aprovação (gestores)</div>
+        <div class="section-sub">${fila.length} solicitação(ões) aguardando decisão do administrador</div>
+      </div>
+      <div style="padding:8px 16px 16px;">
+        ${fila.map(it => `
+          <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:12px;border-bottom:1px solid var(--gray-100);font-size:13px;">
+            <div style="flex:1;min-width:220px;">
+              <span class="badge badge-orange">${it.tipo}</span>
+              <span style="margin-left:8px;color:var(--gray-700);">${it.solicitante_nome || '—'}</span>
+              <div style="font-size:11px;color:var(--gray-500);margin-top:4px;">${new Date(it.criado_em).toLocaleString('pt-BR')}</div>
+            </div>
+            <button type="button" class="btn btn-primary btn-sm" onclick="aprovarModeracaoItem('${it.id}')">Aprovar</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="rejeitarModeracaoItem('${it.id}')">Recusar</button>
+          </div>
+        `).join('')}
+      </div>
+    </div>` : '';
 
   document.getElementById('page-content').innerHTML = `
     <div class="section-header">
@@ -3079,6 +3481,7 @@ function renderUsuarios() {
         <div class="section-sub">${users.length} usuários cadastrados no sistema</div>
       </div>
     </div>
+    ${filaHtml}
     <div class="table-card">
       <div class="table-responsive">
         <table>
@@ -3114,7 +3517,7 @@ function renderUsuarios() {
                   <td class="hide-mobile" style="font-size:12px;max-width:180px;" title="${u.cargo||'—'}">${(u.cargo||'—').substring(0,30)}${u.cargo&&u.cargo.length>30?'…':''}</td>
                   <td><span class="badge badge-${cc}">${ac}</span></td>
                   <td class="hide-mobile" style="font-size:12px;">${u.data_registro ? new Date(u.data_registro).toLocaleDateString('pt-BR') : '—'}</td>
-                  <td><span class="badge badge-${u.ativo!==false?'green':'red'}">${u.ativo!==false?'Ativo':'Inativo'}</span></td>
+                  <td><span class="badge badge-${u.ativo!==false?'green':'red'}">${u.ativo!==false?'Ativo':'Pendente ou inativo'}</span></td>
                   <td>
                     <div style="display:flex;gap:4px;">
                       <button class="btn btn-secondary btn-sm" onclick="editUser('${u.id}')" title="Editar"><i class="fas fa-edit"></i></button>

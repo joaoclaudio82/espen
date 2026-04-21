@@ -4,25 +4,45 @@ from typing import Type
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import AcaoItem, DashboardPreferenceItem, MatrizItem, PdiItem, TrilhaItem, User, UserRole
+from .models import (
+    AcaoItem,
+    DashboardPreferenceItem,
+    MatrizItem,
+    ModeracaoItem,
+    PdiItem,
+    TrilhaItem,
+    User,
+    UserRole,
+)
 from .schemas import UserOut
 
 
-STORAGE_TABLES: dict[str, Type[MatrizItem | AcaoItem | TrilhaItem | PdiItem | DashboardPreferenceItem]] = {
+STORAGE_TABLES: dict[
+    str, Type[MatrizItem | AcaoItem | TrilhaItem | PdiItem | DashboardPreferenceItem | ModeracaoItem]
+] = {
     "espen_matriz": MatrizItem,
     "espen_acoes": AcaoItem,
     "espen_trilhas": TrilhaItem,
     "espen_pdi": PdiItem,
     "espen_dashboard": DashboardPreferenceItem,
+    "espen_moderacao": ModeracaoItem,
 }
 
 
 def role_from_acesso(acesso: str) -> UserRole:
-    return UserRole.ADMIN if acesso == "Administrador" else UserRole.USER
+    if acesso == "Administrador":
+        return UserRole.ADMIN
+    if acesso == "Gestor":
+        return UserRole.GESTOR
+    return UserRole.USER
 
 
 def acesso_from_role(role: UserRole) -> str:
-    return "Administrador" if role == UserRole.ADMIN else "Usuário"
+    if role == UserRole.ADMIN:
+        return "Administrador"
+    if role == UserRole.GESTOR:
+        return "Gestor"
+    return "Usuário"
 
 
 def to_user_out(user: User) -> UserOut:

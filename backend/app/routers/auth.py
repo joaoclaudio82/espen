@@ -2,10 +2,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..crud import role_from_acesso, to_user_out
+from ..crud import to_user_out
 from ..database import get_db
 from ..deps import get_current_user
-from ..models import User
+from ..models import User, UserRole
 from ..schemas import LoginRequest, TokenResponse, UserCreate, UserOut
 from ..security import create_access_token, hash_password, verify_password
 
@@ -16,8 +16,13 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 @router.post("/login", response_model=TokenResponse)
 def login(payload: LoginRequest, db: Session = Depends(get_db)):
     user = db.scalar(select(User).where(User.cpf == payload.cpf))
-    if not user or not user.ativo:
+    if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="CPF ou senha inválidos")
+    if not user.ativo:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cadastro inativo ou aguardando aprovação do administrador. Contate a equipe ESPEN.",
+        )
     if not verify_password(payload.senha, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="CPF ou senha inválidos")
 
@@ -32,14 +37,15 @@ def register(payload: UserCreate, db: Session = Depends(get_db)):
     if db.scalar(select(User).where(User.email == payload.email)):
         raise HTTPException(status_code=400, detail="E-mail já cadastrado")
 
+    # Cadastro público: apenas perfil Usuário e aguarda aprovação do administrador
     user = User(
         cpf=payload.cpf,
         nome=payload.nome,
         email=payload.email,
         cargo=payload.cargo,
-        role=role_from_acesso(payload.acesso),
+        role=UserRole.USER,
         password_hash=hash_password(payload.senha),
-        ativo=True,
+        ativo=False,
     )
     db.add(user)
     db.commit()

@@ -10,6 +10,7 @@ from .database import Base
 
 class UserRole(str, enum.Enum):
     ADMIN = "ADMIN"
+    GESTOR = "GESTOR"
     USER = "USER"
 
 
@@ -67,6 +68,15 @@ class PdiItem(Base):
 
 class DashboardPreferenceItem(Base):
     __tablename__ = "dashboard_preferences"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    data: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ModeracaoItem(Base):
+    __tablename__ = "moderacao_items"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     data: Mapped[dict] = mapped_column(JSON)
