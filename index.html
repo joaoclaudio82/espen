@@ -1002,6 +1002,11 @@ function idEquals(a, b) {
   return String(a) === String(b);
 }
 
+/** Mesma regra de comparação de código usada ao salvar ação e na importação Excel. */
+function normalizeActionCode(s) {
+  return String(s || '').normalize('NFC').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
 // Storage helpers
 function getStorage(key) {
   if (key === STORAGE_KEYS.session) {
@@ -2072,6 +2077,7 @@ function transformExcelRows(moduleKey, rows) {
   const acoes = getStorage(STORAGE_KEYS.acoes) || [];
   const users = getStorage(STORAGE_KEYS.users) || [];
   const trilhas = getStorage(STORAGE_KEYS.trilhas) || [];
+  const codigosAcoesNaPlanilha = new Set();
 
   rows.forEach((row, idx) => {
     try {
@@ -2082,6 +2088,17 @@ function transformExcelRows(moduleKey, rows) {
       } else if (moduleKey === STORAGE_KEYS.acoes) {
         rec = buildAcoesImportRecord(row);
         if (!rec.nome || !rec.objetivo_geral || !rec.carga_horaria) throw new Error('Campos obrigatórios de ações ausentes');
+        const cn = normalizeActionCode(rec.codigo);
+        if (cn) {
+          if (codigosAcoesNaPlanilha.has(cn)) {
+            throw new Error('Código da ação duplicado nesta planilha (mesmo código em mais de uma linha).');
+          }
+          const conflito = acoes.find(a => !idEquals(a.id, rec.id) && normalizeActionCode(a.codigo) === cn);
+          if (conflito) {
+            throw new Error(`Código "${String(rec.codigo).trim()}" já existe em outra ação cadastrada.`);
+          }
+          codigosAcoesNaPlanilha.add(cn);
+        }
       } else if (moduleKey === STORAGE_KEYS.trilhas) {
         rec = buildTrilhaImportRecord(row, acoes);
         if (!rec.nome) throw new Error('Nome da trilha é obrigatório');
@@ -3293,15 +3310,14 @@ function saveAcao() {
   const ch = document.getElementById('af-ch').value;
   if (!nome || !objetivo || !ch) { showToast('Preencha os campos obrigatórios (*)', 'warning'); return; }
   const codigoVal = document.getElementById('af-codigo').value.trim();
-  const normCode = (v) => String(v || '').normalize('NFC').trim().toLowerCase().replace(/\s+/g, ' ');
-  const codigoNorm = normCode(codigoVal);
+  const codigoNorm = normalizeActionCode(codigoVal);
   const todas = getStorage(STORAGE_KEYS.acoes) || [];
-  if (!id && codigoVal && todas.some(x => x.codigo && normCode(x.codigo) === codigoNorm)) {
+  if (!id && codigoVal && todas.some(x => x.codigo && normalizeActionCode(x.codigo) === codigoNorm)) {
     showToast('Já existe uma ação com este código. Altere o código para cadastrar como nova.', 'warning');
     return;
   }
   if (id && codigoVal) {
-    const outro = todas.find(x => !idEquals(x.id, id) && x.codigo && normCode(x.codigo) === codigoNorm);
+    const outro = todas.find(x => !idEquals(x.id, id) && x.codigo && normalizeActionCode(x.codigo) === codigoNorm);
     if (outro) {
       showToast('Outra ação já usa este código.', 'warning');
       return;
