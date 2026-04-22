@@ -2088,14 +2088,23 @@ function transformExcelRows(moduleKey, rows) {
       } else if (moduleKey === STORAGE_KEYS.acoes) {
         rec = buildAcoesImportRecord(row);
         if (!rec.nome || !rec.objetivo_geral || !rec.carga_horaria) throw new Error('Campos obrigatórios de ações ausentes');
+        const idNaPlanilha = String(getRowValue(row, ['id', 'id_registro', 'id_acao']) || '').trim();
         const cn = normalizeActionCode(rec.codigo);
         if (cn) {
           if (codigosAcoesNaPlanilha.has(cn)) {
             throw new Error('Código da ação duplicado nesta planilha (mesmo código em mais de uma linha).');
           }
-          const conflito = acoes.find(a => !idEquals(a.id, rec.id) && normalizeActionCode(a.codigo) === cn);
+          const existentePeloCodigo = acoes.find((a) => normalizeActionCode(a.codigo) === cn);
+          if (existentePeloCodigo && !idNaPlanilha) {
+            rec.id = existentePeloCodigo.id;
+          }
+          const conflito = acoes.find(
+            (a) => !idEquals(a.id, rec.id) && normalizeActionCode(a.codigo) === cn
+          );
           if (conflito) {
-            throw new Error(`Código "${String(rec.codigo).trim()}" já existe em outra ação cadastrada.`);
+            throw new Error(
+              `Código "${String(rec.codigo).trim()}" já está em uso por outra ação. Use outro código ou informe na planilha a coluna "id" do registro que deseja alterar.`
+            );
           }
           codigosAcoesNaPlanilha.add(cn);
         }
@@ -2153,7 +2162,23 @@ function importExcelData(moduleKey) {
         '• Cancelar — mantém o que já existe e acrescenta só os registros importados.'
       );
       const existing = getStorage(moduleKey) || [];
-      const payload = replaceAll ? valid : [...existing, ...valid];
+      let payload;
+      if (replaceAll) {
+        payload = valid;
+      } else if (moduleKey === STORAGE_KEYS.acoes) {
+        const byId = new Map((existing || []).map((x) => [String(x.id), { ...x }]));
+        valid.forEach((v) => {
+          const k = String(v.id);
+          if (byId.has(k)) {
+            byId.set(k, { ...byId.get(k), ...v });
+          } else {
+            byId.set(k, v);
+          }
+        });
+        payload = Array.from(byId.values());
+      } else {
+        payload = [...(existing || []), ...valid];
+      }
       setStorage(moduleKey, payload);
 
       showToast(`Importação concluída: ${valid.length} válida(s), ${invalid.length} inválida(s).`, invalid.length ? 'warning' : 'success');
