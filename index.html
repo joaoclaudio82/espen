@@ -1863,6 +1863,19 @@ function getRowValue(row, aliases) {
   return '';
 }
 
+/** Carga horária (> 0) para importação; retorna null se ausente/ inválida. */
+function cargaHorariaLidaAPlanilha(row) {
+  const cargaRaw = getRowValue(row, [
+    'carga_horaria', 'ch', 'carga', '13_carga_horaria', 'horas', 'total_horas', 'total_de_horas',
+    'carga_h', 'h', 'cargahoraria', 'carga_hora', 'carga_de_horas', 'carga_horria',
+  ]);
+  const s = cargaRaw !== '' && cargaRaw != null ? String(cargaRaw).replace(/\s/g, '').replace(',', '.').trim() : '';
+  if (!s) return null;
+  const n = parseInt(s, 10);
+  if (!Number.isFinite(n) || Number.isNaN(n) || n <= 0) return null;
+  return n;
+}
+
 function parseBool(value) {
   const normalized = String(value || '').trim().toLowerCase();
   return ['1', 'true', 'sim', 'yes', 'y', 'ok'].includes(normalized);
@@ -1935,7 +1948,7 @@ function syncEixoTematicoLegado(eixo, unidade) {
 }
 
 function buildAcoesImportRecord(row) {
-  const carga = parseInt(getRowValue(row, ['carga_horaria', 'ch', 'carga', '13_carga_horaria']), 10);
+  const chLida = cargaHorariaLidaAPlanilha(row);
   const eixo = getRowValue(row, ['eixo', '6_eixo']);
   const unidade = getRowValue(row, ['unidade', '7_unidade']);
   const instA = getRowValue(row, [
@@ -1950,18 +1963,18 @@ function buildAcoesImportRecord(row) {
     'instrumento_avaliacao_transferencia',
     '24_instrumentos_de_avaliacao_de_transferencia_e_impacto', '24_instrumento_de_avaliacao_da_transferencia',
   ]);
-  const nome = getRowValue(row, ['nome', 'nome_da_acao', '3_nome_da_acao']);
+  const nome = getRowValue(row, ['nome', 'nome_da_acao', '3_nome_da_acao', 'titulo', 'nome_da_acao_educativa', 'curso']);
   const objEsp = getRowValue(row, ['objetivos_especificos', '11_objetivos_especificos']);
   const compOferta = getRowValue(row, ['competencia', '10_competencia', 'competencia_texto']);
-  const objetivoGeral = getRowValue(row, ['objetivo_geral', 'objetivo'])
+  const objetivoGeral = getRowValue(row, ['objetivo_geral', 'objetivo', '14_objetivo_geral', 'objetivo_geral_da_acao'])
     || [compOferta, objEsp].filter(Boolean).join('\n\n')
     || getRowValue(row, ['objetivo_de_aprendizagem_mcn', 'objetivo_aprendizagem_mcn'])
     || String(getRowValue(row, ['conteudos', '15_conteudos']) || '').slice(0, 2000);
   return {
-    id: getRowValue(row, ['id']) || genId(),
+    id: getRowValue(row, ['id', 'id_registro', 'id_acao', 'id_acao_educativa']) || genId(),
     nome,
     objetivo_geral: objetivoGeral,
-    codigo: getRowValue(row, ['codigo', 'id_ae']),
+    codigo: getRowValue(row, ['codigo', 'id_ae', 'codigo_ae', '3_codigo', '4_codigo', '5_id_ae', '3_id_ae']),
     tipo: getRowValue(row, ['tipo', '4_tipo_da_acao']) || 'Curso',
     estado: getRowValue(row, ['estado']),
     sigla_estado: getRowValue(row, ['sigla_estado']),
@@ -1996,7 +2009,7 @@ function buildAcoesImportRecord(row) {
     recursos_materiais: getRowValue(row, ['recursos_materiais', '19_recursos_materiais']),
     recursos_tecnologicos: getRowValue(row, ['recursos_tecnologicos', '20_recursos_tecnologicos']),
     recursos_humanos: getRowValue(row, ['recursos_humanos', '21_recursos_humanos']),
-    carga_horaria: Number.isFinite(carga) ? carga : 0,
+    carga_horaria: chLida != null ? chLida : 0,
     num_modulos: parseInt(getRowValue(row, ['num_modulos', 'modulos']), 10) || 1,
     modalidade: getRowValue(row, ['modalidade', '12_modalidade']) || 'EaD',
     num_vagas: parseInt(getRowValue(row, ['num_vagas', 'vagas']), 10) || 0,
@@ -2087,23 +2100,36 @@ function transformExcelRows(moduleKey, rows) {
         if (!rec.competencia || !rec.categoria || !rec.cargo || !rec.objetivo) throw new Error('Campos obrigatórios da matriz ausentes');
       } else if (moduleKey === STORAGE_KEYS.acoes) {
         rec = buildAcoesImportRecord(row);
-        if (!rec.nome || !rec.objetivo_geral || !rec.carga_horaria) throw new Error('Campos obrigatórios de ações ausentes');
+        const chOk = cargaHorariaLidaAPlanilha(row);
+        if (chOk != null) rec.carga_horaria = chOk;
+        if (!String(rec.nome || '').trim()) {
+          throw new Error('Nome da ação ausente (colunas: nome, nome_da_acao, titulo, curso).');
+        }
+        if (!String(rec.objetivo_geral || '').trim()) {
+          throw new Error('Objetivo geral vazio (objetivo_geral, objetivo, competência ou conteúdos).');
+        }
+        if (chOk == null) {
+          throw new Error('Carga horária ausente ou inválida. Use carga_horaria, ch, horas ou 13_carga_horaria (número > 0).');
+        }
         const idNaPlanilha = String(getRowValue(row, ['id', 'id_registro', 'id_acao']) || '').trim();
         const cn = normalizeActionCode(rec.codigo);
         if (cn) {
           if (codigosAcoesNaPlanilha.has(cn)) {
             throw new Error('Código da ação duplicado nesta planilha (mesmo código em mais de uma linha).');
           }
-          const existentePeloCodigo = acoes.find((a) => normalizeActionCode(a.codigo) === cn);
-          if (existentePeloCodigo && !idNaPlanilha) {
-            rec.id = existentePeloCodigo.id;
+          const matches = acoes.filter((a) => normalizeActionCode(a.codigo) === cn);
+          if (matches.length && !idNaPlanilha) {
+            rec.id = matches[0].id;
           }
-          const conflito = acoes.find(
-            (a) => !idEquals(a.id, rec.id) && normalizeActionCode(a.codigo) === cn
-          );
+          const conflito = acoes.find((a) => {
+            if (normalizeActionCode(a.codigo) !== cn) return false;
+            if (idEquals(a.id, rec.id)) return false;
+            if (matches.length > 1 && idEquals(rec.id, matches[0].id)) return false;
+            return true;
+          });
           if (conflito) {
             throw new Error(
-              `Código "${String(rec.codigo).trim()}" já está em uso por outra ação. Use outro código ou informe na planilha a coluna "id" do registro que deseja alterar.`
+              `Código "${String(rec.codigo).trim()}" conflita com outro registro. Ajuste o código ou a coluna id.`
             );
           }
           codigosAcoesNaPlanilha.add(cn);
@@ -2152,7 +2178,11 @@ function importExcelData(moduleKey) {
 
       const { valid, invalid } = transformExcelRows(moduleKey, rows);
       if (!valid.length) {
-        showToast('Nenhuma linha válida encontrada na planilha.', 'error');
+        const amostra = (invalid || []).slice(0, 3).map((i) => `Linha ${i.line}: ${i.error}`).join(' ');
+        showToast(
+          'Nenhuma linha válida. ' + (amostra ? amostra + (invalid.length > 3 ? ' …' : '') : 'Verifique cabeçalhos e carga horária.'),
+          'error'
+        );
         return;
       }
 
