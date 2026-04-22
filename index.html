@@ -995,6 +995,13 @@ function genId() {
   return Date.now().toString(36) + Math.random().toString(36).substr(2);
 }
 
+/** Compara ids de registros (local, API, Excel) de forma segura (string vs número/UUID). */
+function idEquals(a, b) {
+  if (a == null && b == null) return true;
+  if (a == null || b == null) return false;
+  return String(a) === String(b);
+}
+
 // Storage helpers
 function getStorage(key) {
   if (key === STORAGE_KEYS.session) {
@@ -1418,7 +1425,7 @@ function aplicarItemModeracao(item) {
     const data = getStorage(STORAGE_KEYS.matriz) || [];
     const rec = payload.registro;
     if (payload.editId) {
-      const idx = data.findIndex(x => x.id === payload.editId);
+      const idx = data.findIndex(x => idEquals(x.id, payload.editId));
       if (idx >= 0) data[idx] = rec;
     } else {
       data.push(rec);
@@ -1426,7 +1433,7 @@ function aplicarItemModeracao(item) {
     setStorage(STORAGE_KEYS.matriz, data);
   } else if (tipo === 'matriz_arquivar') {
     const data = getStorage(STORAGE_KEYS.matriz) || [];
-    const idx = data.findIndex(x => x.id === payload.id);
+    const idx = data.findIndex(x => idEquals(x.id, payload.id));
     if (idx >= 0) {
       const anterior = JSON.parse(JSON.stringify(data[idx]));
       const hist = Array.isArray(anterior.historico) ? anterior.historico : [];
@@ -1444,40 +1451,40 @@ function aplicarItemModeracao(item) {
     const data = getStorage(STORAGE_KEYS.acoes) || [];
     const rec = payload.registro;
     if (payload.editId) {
-      const idx = data.findIndex(x => x.id === payload.editId);
+      const idx = data.findIndex(x => idEquals(x.id, payload.editId));
       if (idx >= 0) data[idx] = { ...data[idx], ...rec };
     } else {
       data.push(rec);
     }
     setStorage(STORAGE_KEYS.acoes, data);
   } else if (tipo === 'acao_excluir') {
-    const data = (getStorage(STORAGE_KEYS.acoes) || []).filter(x => x.id !== payload.id);
+    const data = (getStorage(STORAGE_KEYS.acoes) || []).filter(x => !idEquals(x.id, payload.id));
     setStorage(STORAGE_KEYS.acoes, data);
   } else if (tipo === 'trilha_upsert') {
     const data = getStorage(STORAGE_KEYS.trilhas) || [];
     const rec = payload.registro;
     if (payload.editId) {
-      const idx = data.findIndex(x => x.id === payload.editId);
+      const idx = data.findIndex(x => idEquals(x.id, payload.editId));
       if (idx >= 0) data[idx] = { ...data[idx], ...rec };
     } else {
       data.push(rec);
     }
     setStorage(STORAGE_KEYS.trilhas, data);
   } else if (tipo === 'trilha_excluir') {
-    const data = (getStorage(STORAGE_KEYS.trilhas) || []).filter(x => x.id !== payload.id);
+    const data = (getStorage(STORAGE_KEYS.trilhas) || []).filter(x => !idEquals(x.id, payload.id));
     setStorage(STORAGE_KEYS.trilhas, data);
   } else if (tipo === 'pdi_upsert') {
     const data = getStorage(STORAGE_KEYS.pdi) || [];
     const rec = payload.registro;
     if (payload.editId) {
-      const idx = data.findIndex(x => x.id === payload.editId);
+      const idx = data.findIndex(x => idEquals(x.id, payload.editId));
       if (idx >= 0) data[idx] = { ...data[idx], ...rec };
     } else {
       data.push(rec);
     }
     setStorage(STORAGE_KEYS.pdi, data);
   } else if (tipo === 'pdi_excluir') {
-    const data = (getStorage(STORAGE_KEYS.pdi) || []).filter(x => x.id !== payload.id);
+    const data = (getStorage(STORAGE_KEYS.pdi) || []).filter(x => !idEquals(x.id, payload.id));
     setStorage(STORAGE_KEYS.pdi, data);
   }
 }
@@ -1656,17 +1663,28 @@ function destroyDashboardCharts() {
   charts = {};
 }
 
+/**
+ * Escopo da matriz usado nos gráficos do dashboard.
+ * Se o filtro estiver em "filtrado" mas nenhuma ação tiver competências vinculadas,
+ * usa fallback: todas as competências ativas (evita gráficos vazios enganosos).
+ * @returns {{ escopo: array, matrizEscopoFallback: boolean }}
+ */
 function getMatrizEscopoDashboard(dashSel, acoes, matriz) {
   const ativos = (matriz || []).filter(r => !r.arquivado);
-  if (dashSel.mode === 'all') return ativos;
-  if (dashSel.mode === 'none') return [];
+  if (dashSel.mode === 'all') return { escopo: ativos, matrizEscopoFallback: false };
+  if (dashSel.mode === 'none') return { escopo: [], matrizEscopoFallback: false };
   const idSet = new Set((dashSel.ids || []).map(String));
   const compSet = new Set();
   (acoes || []).filter(a => idSet.has(String(a.id))).forEach(a => {
     (a.competencias_vinculadas || []).forEach(cid => { if (cid) compSet.add(String(cid)); });
   });
-  if (compSet.size === 0) return [];
-  return ativos.filter(r => compSet.has(String(r.id)));
+  if (compSet.size === 0) {
+    if (idSet.size > 0) {
+      return { escopo: ativos, matrizEscopoFallback: true };
+    }
+    return { escopo: [], matrizEscopoFallback: false };
+  }
+  return { escopo: ativos.filter(r => compSet.has(String(r.id))), matrizEscopoFallback: false };
 }
 
 function navigate(page) {
@@ -1993,7 +2011,7 @@ function buildAcoesImportRecord(row) {
 function buildTrilhaImportRecord(row, acoes) {
   const rawRefs = parseIdList(getRowValue(row, ['acoes_vinculadas', 'acoes', 'acoes_ids']));
   const actionIds = rawRefs.map((token) => {
-    const byId = acoes.find(a => a.id === token);
+    const byId = acoes.find(a => idEquals(a.id, token));
     if (byId) return byId.id;
     const byName = acoes.find(a => (a.nome || '').toLowerCase() === token.toLowerCase());
     return byName ? byName.id : null;
@@ -2148,14 +2166,16 @@ function renderDashboard() {
     : dashSel.mode === 'filtered'
       ? acoes.filter(a => selIdSet.has(String(a.id)))
       : acoes;
-  const matrizEscopo = getMatrizEscopoDashboard(dashSel, acoes, matriz);
+  const { escopo: matrizEscopo, matrizEscopoFallback } = getMatrizEscopoDashboard(dashSel, acoes, matriz);
   const scopeHint = dashSel.mode === 'all'
     ? 'Os gráficos refletem todas as competências ativas da matriz.'
     : dashSel.mode === 'none'
       ? 'Filtro vazio: gráficos da matriz sem dados (nenhuma ação no escopo).'
-      : matrizEscopo.length
-        ? 'Os gráficos mostram apenas competências vinculadas às ações selecionadas no filtro.'
-        : 'Nenhuma competência da matriz vinculada às ações escolhidas; gráficos ficam vazios. Vincule ações à matriz ou ajuste o filtro.';
+      : matrizEscopoFallback
+        ? 'Ações selecionadas ainda não têm competências da matriz vinculadas; os gráficos exibem todas as competências ativas. Vincule competências em cada ação (ou use Limpar no filtro) para restringir o escopo.'
+        : matrizEscopo.length
+          ? 'Os gráficos mostram apenas competências vinculadas às ações selecionadas no filtro.'
+          : 'Nenhuma competência da matriz vinculada às ações escolhidas. Vincule ações à matriz ou ajuste o filtro.';
 
   document.getElementById('page-content').innerHTML = `
     <div class="dashboard-filter-wrap">
@@ -3005,7 +3025,7 @@ function renderAcoesGrid() {
 
 function viewAcaoDetail(id) {
   const data = getStorage(STORAGE_KEYS.acoes) || [];
-  const a = data.find(x => x.id === id);
+  const a = data.find(x => idEquals(x.id, id));
   if (!a) return;
   const eu = acaoEixoUnidadeFromLegacy(a);
   const instAp = a.instrumento_avaliacao_aprendizagem || a.instrumento_avaliacao || '';
@@ -3094,7 +3114,7 @@ function viewAcaoDetail(id) {
     <div class="detail-field">
       <div class="detail-label">Competências da MCN vinculadas (registros)</div>
       <div class="detail-value" style="font-size:13px;line-height:1.5;">${(a.competencias_vinculadas||[]).map(cid => {
-        const m = (getStorage(STORAGE_KEYS.matriz)||[]).find(x => x.id === cid);
+        const m = (getStorage(STORAGE_KEYS.matriz)||[]).find(x => idEquals(x.id, cid));
         return m ? `• ${m.competencia}` : `• (${cid})`;
       }).join('<br>')}</div>
     </div>` : ''}
@@ -3106,12 +3126,10 @@ function openAcaoForm(id = null, cloneFromId = null) {
   if (isSomenteLeitura()) return;
   const data = getStorage(STORAGE_KEYS.acoes) || [];
   let a = {};
-  const idNorm = id == null ? '' : String(id);
-  const cloneNorm = cloneFromId == null ? '' : String(cloneFromId);
   if (id) {
-    a = data.find(x => String(x.id) === idNorm) || {};
+    a = data.find(x => idEquals(x.id, id)) || {};
   } else if (cloneFromId) {
-    const src = data.find(x => String(x.id) === cloneNorm);
+    const src = data.find(x => idEquals(x.id, cloneFromId));
     if (src) {
       a = JSON.parse(JSON.stringify(src));
       delete a.id;
@@ -3140,7 +3158,7 @@ function openAcaoForm(id = null, cloneFromId = null) {
         <label>Copiar dados de</label>
         <select id="af-clone-base" onchange="var v=this.value;if(v){openAcaoForm(null,v);}">
           <option value="">— Em branco —</option>
-          ${data.map(x => `<option value="${x.id}" ${String(x.id)===cloneNorm?'selected':''}>${(x.nome||'Sem nome').replace(/</g,'&lt;').substring(0,90)}${(x.codigo?' ('+String(x.codigo).replace(/</g,'')+')':'')}</option>`).join('')}
+          ${data.map(x => `<option value="${x.id}" ${idEquals(x.id, cloneFromId)?'selected':''}>${(x.nome||'Sem nome').replace(/</g,'&lt;').substring(0,90)}${(x.codigo?' ('+String(x.codigo).replace(/</g,'')+')':'')}</option>`).join('')}
         </select>
       </div>
     </div>` : '';
@@ -3275,15 +3293,15 @@ function saveAcao() {
   const ch = document.getElementById('af-ch').value;
   if (!nome || !objetivo || !ch) { showToast('Preencha os campos obrigatórios (*)', 'warning'); return; }
   const codigoVal = document.getElementById('af-codigo').value.trim();
-  const codigoNorm = codigoVal.toLowerCase();
+  const normCode = (v) => String(v || '').normalize('NFC').trim().toLowerCase().replace(/\s+/g, ' ');
+  const codigoNorm = normCode(codigoVal);
   const todas = getStorage(STORAGE_KEYS.acoes) || [];
-  if (!id && codigoVal && todas.some(x => x.codigo && String(x.codigo).trim().toLowerCase() === codigoNorm)) {
+  if (!id && codigoVal && todas.some(x => x.codigo && normCode(x.codigo) === codigoNorm)) {
     showToast('Já existe uma ação com este código. Altere o código para cadastrar como nova.', 'warning');
     return;
   }
   if (id && codigoVal) {
-    const idNorm = String(id);
-    const outro = todas.find(x => String(x.id) !== idNorm && x.codigo && String(x.codigo).trim().toLowerCase() === codigoNorm);
+    const outro = todas.find(x => !idEquals(x.id, id) && x.codigo && normCode(x.codigo) === codigoNorm);
     if (outro) {
       showToast('Outra ação já usa este código.', 'warning');
       return;
@@ -3345,7 +3363,7 @@ function saveAcao() {
   };
   const data = getStorage(STORAGE_KEYS.acoes) || [];
   if (id) {
-    const idx = data.findIndex(x => x.id === id);
+    const idx = data.findIndex(x => idEquals(x.id, id));
     if (idx < 0) return;
     const merged = { ...data[idx], ...rec };
     if (usaFilaModeracao()) {
@@ -3379,7 +3397,7 @@ function deleteAcao(id) {
     renderAcoesGrid();
     return;
   }
-  const data = (getStorage(STORAGE_KEYS.acoes) || []).filter(x => x.id !== id);
+  const data = (getStorage(STORAGE_KEYS.acoes) || []).filter(x => !idEquals(x.id, id));
   setStorage(STORAGE_KEYS.acoes, data);
   showToast('Ação excluída.', 'success');
   renderAcoesGrid();
@@ -3419,7 +3437,7 @@ function renderTrilhas() {
     const nivelColors = { Básico: 'green', Intermediário: 'gold', Avançado: 'blue' };
     trilhas.forEach(t => {
       const totalHoras = (t.acoes_vinculadas || []).reduce((sum, aid) => {
-        const a = acoes.find(x => x.id === aid);
+        const a = acoes.find(x => idEquals(x.id, aid));
         return sum + (a ? a.carga_horaria : 0);
       }, 0);
       html += `
@@ -3446,7 +3464,7 @@ function renderTrilhas() {
             </div>
             <div class="timeline">
               ${(t.acoes_vinculadas||[]).slice(0,4).map((aid, i) => {
-                const a = acoes.find(x => x.id === aid);
+                const a = acoes.find(x => idEquals(x.id, aid));
                 return `<div class="timeline-item">
                   <div class="timeline-title">${a ? a.nome.substring(0,50)+'…' : 'Ação não encontrada'}</div>
                   <div class="timeline-sub">${a ? `${a.modalidade} • ${a.carga_horaria}h` : ''}</div>
@@ -3467,7 +3485,7 @@ function renderTrilhas() {
 function openTrilhaForm(id = null) {
   const trilhas = getStorage(STORAGE_KEYS.trilhas) || [];
   const acoes = getStorage(STORAGE_KEYS.acoes) || [];
-  const t = id ? (trilhas.find(x => x.id === id) || {}) : {};
+  const t = id ? (trilhas.find(x => idEquals(x.id, id)) || {}) : {};
   const selected = t.acoes_vinculadas || [];
 
   const body = `
@@ -3659,7 +3677,7 @@ function renderPDI() {
               <div style="margin-top:14px;">
                 <div style="font-size:12px;font-weight:700;color:var(--gray-600);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px;">Ações da Trilha</div>
                 ${(trilha.acoes_vinculadas||[]).slice(0,5).map(aid => {
-                  const a = acoes.find(x => x.id === aid);
+                  const a = acoes.find(x => idEquals(x.id, aid));
                   const done = (p.acoes_status||{})[aid];
                   return a ? `
                     <label style="display:flex;align-items:center;gap:10px;padding:6px;cursor:pointer;border-radius:6px;font-size:13px;">
@@ -4545,7 +4563,7 @@ async function exportPDIDOCX(btn) {
       children.push(docxSectionTitle('Ações da Trilha e Status'));
 
       trilha.acoes_vinculadas.forEach((aid, ai) => {
-        const acao  = acoes.find(x => x.id === aid);
+        const acao  = acoes.find(x => idEquals(x.id, aid));
         const feito = (p.acoes_status || {})[aid] === true;
         if (!acao) return;
         children.push(
@@ -4562,11 +4580,11 @@ async function exportPDIDOCX(btn) {
       });
 
       const totalHoras = trilha.acoes_vinculadas.reduce((sum, aid) => {
-        const a = acoes.find(x => x.id === aid); return sum + (a ? (a.carga_horaria||0) : 0);
+        const a = acoes.find(x => idEquals(x.id, aid)); return sum + (a ? (a.carga_horaria||0) : 0);
       }, 0);
       const horasConcluidas = trilha.acoes_vinculadas
         .filter(aid => (p.acoes_status||{})[aid])
-        .reduce((sum, aid) => { const a = acoes.find(x => x.id === aid); return sum + (a ? (a.carga_horaria||0) : 0); }, 0);
+        .reduce((sum, aid) => { const a = acoes.find(x => idEquals(x.id, aid)); return sum + (a ? (a.carga_horaria||0) : 0); }, 0);
 
       children.push(docxDivider());
       children.push(
