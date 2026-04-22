@@ -2152,6 +2152,39 @@ function transformExcelRows(moduleKey, rows) {
   return { valid, invalid };
 }
 
+/** Resumo pós-importação: novos vs. atualização de IDs já no acervo (planilha sobrescreve merge em AEs). */
+function resumoMensagemImportacao(moduleKey, replaceAll, existing, valid, invalidCount) {
+  const ex = existing || [];
+  const exIds = new Set(ex.map((x) => String(x.id)));
+  const inv = invalidCount || 0;
+  const sufixoInv = inv > 0 ? ` ${inv} linha(s) da planilha rejeitada(s).` : '';
+  if (replaceAll) {
+    return {
+      text:
+        `Substituiu todo o módulo: agora há ${valid.length} registro(s) com base na planilha (dados anteriores deste módulo deixam de valer).` + sufixoInv,
+      toastType: inv > 0 ? 'warning' : 'success',
+    };
+  }
+  const novos = valid.filter((v) => !exIds.has(String(v.id))).length;
+  const atual = valid.length - novos;
+  if (atual > 0 && novos > 0) {
+    return {
+      text: `${novos} registro(s) novo(s) e ${atual} registro(s) que já existiam (foram atualizados com os dados da planilha).` + sufixoInv,
+      toastType: 'warning',
+    };
+  }
+  if (atual > 0) {
+    return {
+      text: `Nenhum registro novo: ${atual} linha(s) corresponderam a registro(s) já existente(s) e foram atualizadas conforme a planilha.` + sufixoInv,
+      toastType: 'warning',
+    };
+  }
+  return {
+    text: `Incluídos ${novos} registro(s) novo(s).` + sufixoInv,
+    toastType: inv > 0 ? 'warning' : 'success',
+  };
+}
+
 function importExcelData(moduleKey) {
   if (!isAdminUser()) {
     showToast('A importação em massa é restrita ao administrador.', 'warning');
@@ -2211,7 +2244,8 @@ function importExcelData(moduleKey) {
       }
       setStorage(moduleKey, payload);
 
-      showToast(`Importação concluída: ${valid.length} válida(s), ${invalid.length} inválida(s).`, invalid.length ? 'warning' : 'success');
+      const res = resumoMensagemImportacao(moduleKey, replaceAll, existing, valid, invalid.length);
+      showToast(res.text, res.toastType);
 
       if (moduleKey === STORAGE_KEYS.matriz) renderMatrizTable();
       if (moduleKey === STORAGE_KEYS.acoes) renderAcoesGrid();
