@@ -2147,7 +2147,11 @@ function importExcelData(moduleKey) {
         return;
       }
 
-      const replaceAll = confirm('Deseja substituir os dados existentes? Clique em Cancelar para adicionar os novos registros.');
+      const replaceAll = confirm(
+        'Importação: escolha o modo.\n\n' +
+        '• OK — substitui todos os registros deste módulo pelos dados da planilha.\n' +
+        '• Cancelar — mantém o que já existe e acrescenta só os registros importados.'
+      );
       const existing = getStorage(moduleKey) || [];
       const payload = replaceAll ? valid : [...existing, ...valid];
       setStorage(moduleKey, payload);
