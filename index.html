@@ -3106,10 +3106,12 @@ function openAcaoForm(id = null, cloneFromId = null) {
   if (isSomenteLeitura()) return;
   const data = getStorage(STORAGE_KEYS.acoes) || [];
   let a = {};
+  const idNorm = id == null ? '' : String(id);
+  const cloneNorm = cloneFromId == null ? '' : String(cloneFromId);
   if (id) {
-    a = data.find(x => x.id === id) || {};
+    a = data.find(x => String(x.id) === idNorm) || {};
   } else if (cloneFromId) {
-    const src = data.find(x => x.id === cloneFromId);
+    const src = data.find(x => String(x.id) === cloneNorm);
     if (src) {
       a = JSON.parse(JSON.stringify(src));
       delete a.id;
@@ -3138,7 +3140,7 @@ function openAcaoForm(id = null, cloneFromId = null) {
         <label>Copiar dados de</label>
         <select id="af-clone-base" onchange="var v=this.value;if(v){openAcaoForm(null,v);}">
           <option value="">— Em branco —</option>
-          ${data.map(x => `<option value="${x.id}" ${cloneFromId===x.id?'selected':''}>${(x.nome||'Sem nome').replace(/</g,'&lt;').substring(0,90)}${(x.codigo?' ('+String(x.codigo).replace(/</g,'')+')':'')}</option>`).join('')}
+          ${data.map(x => `<option value="${x.id}" ${String(x.id)===cloneNorm?'selected':''}>${(x.nome||'Sem nome').replace(/</g,'&lt;').substring(0,90)}${(x.codigo?' ('+String(x.codigo).replace(/</g,'')+')':'')}</option>`).join('')}
         </select>
       </div>
     </div>` : '';
@@ -3273,13 +3275,15 @@ function saveAcao() {
   const ch = document.getElementById('af-ch').value;
   if (!nome || !objetivo || !ch) { showToast('Preencha os campos obrigatórios (*)', 'warning'); return; }
   const codigoVal = document.getElementById('af-codigo').value.trim();
+  const codigoNorm = codigoVal.toLowerCase();
   const todas = getStorage(STORAGE_KEYS.acoes) || [];
-  if (!id && codigoVal && todas.some(x => x.codigo && String(x.codigo).trim() === codigoVal)) {
+  if (!id && codigoVal && todas.some(x => x.codigo && String(x.codigo).trim().toLowerCase() === codigoNorm)) {
     showToast('Já existe uma ação com este código. Altere o código para cadastrar como nova.', 'warning');
     return;
   }
   if (id && codigoVal) {
-    const outro = todas.find(x => x.id !== id && x.codigo && String(x.codigo).trim() === codigoVal);
+    const idNorm = String(id);
+    const outro = todas.find(x => String(x.id) !== idNorm && x.codigo && String(x.codigo).trim().toLowerCase() === codigoNorm);
     if (outro) {
       showToast('Outra ação já usa este código.', 'warning');
       return;
