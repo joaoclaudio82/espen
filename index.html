@@ -919,7 +919,8 @@ textarea.field-sugerido, input.field-sugerido { border-color: #e65100 !important
     <form id="register-form" class="auth-form" onsubmit="event.preventDefault();doRegister()">
       <div class="form-group">
         <label>CPF *</label>
-        <input type="text" id="reg-cpf" placeholder="000.000.000-00" maxlength="14" oninput="maskCPF(this)" autocomplete="username">
+        <input type="text" id="reg-cpf" placeholder="000.000.000-00" maxlength="14" oninput="maskCPF(this);validateRegisterCPF(true)" onblur="validateRegisterCPF()" autocomplete="username">
+        <div id="reg-cpf-feedback" style="display:none;font-size:12px;margin-top:6px;"></div>
       </div>
       <div class="form-group">
         <label>Nome Completo *</label>
@@ -1876,6 +1877,43 @@ function validateCPF(cpf) {
   return true;
 }
 
+function validateRegisterCPF(skipIncomplete = false) {
+  const cpfInput = document.getElementById('reg-cpf');
+  const feedback = document.getElementById('reg-cpf-feedback');
+  if (!cpfInput || !feedback) return true;
+
+  const cpf = (cpfInput.value || '').trim();
+  const digits = cpf.replace(/\D/g, '');
+
+  cpfInput.style.borderColor = '';
+  feedback.style.display = 'none';
+  feedback.textContent = '';
+
+  if (digits.length === 0) return true;
+  if (digits.length < 11) {
+    if (!skipIncomplete) {
+      feedback.style.display = 'block';
+      feedback.style.color = 'var(--warning)';
+      feedback.textContent = 'CPF incompleto.';
+      cpfInput.style.borderColor = 'var(--warning)';
+    }
+    return false;
+  }
+
+  const isValid = validateCPF(cpf);
+  feedback.style.display = 'block';
+  if (isValid) {
+    feedback.style.color = 'var(--success)';
+    feedback.textContent = 'CPF válido.';
+    cpfInput.style.borderColor = 'var(--success)';
+  } else {
+    feedback.style.color = 'var(--danger)';
+    feedback.textContent = 'CPF inválido. Verifique os dígitos.';
+    cpfInput.style.borderColor = 'var(--danger)';
+  }
+  return isValid;
+}
+
 function doLogin() {
   const cpf = document.getElementById('login-cpf').value.trim();
   const senha = document.getElementById('login-senha').value;
@@ -1907,7 +1945,7 @@ function doRegister() {
     showToast('Preencha todos os campos obrigatórios (*)', 'warning'); return;
   }
   if (!cargo) { showToast('Selecione o cargo', 'warning'); return; }
-  if (!validateCPF(cpf)) { showToast('CPF inválido', 'error'); return; }
+  if (!validateRegisterCPF()) { showToast('CPF inválido', 'error'); return; }
   if (senha.length < 6) { showToast('Senha deve ter no mínimo 6 caracteres', 'warning'); return; }
   if (senha !== confirma) { showToast('As senhas não coincidem', 'error'); return; }
 
