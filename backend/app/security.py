@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from jose import JWTError, jwt
@@ -8,6 +9,17 @@ from .config import settings
 
 PBKDF2_ALGO = "sha256"
 PBKDF2_ITERATIONS = 120_000
+
+_SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$", re.IGNORECASE)
+
+
+def sha256_hex_utf8(plain: str) -> str:
+    """SHA-256 da senha em UTF-8, em hexadecimal minúsculo (valor enviado na API em vez do texto plano)."""
+    return hashlib.sha256(plain.encode("utf-8")).hexdigest().lower()
+
+
+def is_sha256_hex(s: str) -> bool:
+    return bool(s and _SHA256_HEX_RE.match(s.strip()))
 
 
 def hash_password(password: str) -> str:

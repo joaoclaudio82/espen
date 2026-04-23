@@ -6,7 +6,7 @@ from sqlalchemy import select
 from app.database import SessionLocal
 from app.models import User, UserRole
 from app.routers.storage import STORAGE_TABLES
-from app.security import hash_password
+from app.security import hash_password, sha256_hex_utf8
 
 
 def map_user_payload(payload: dict) -> dict:
@@ -44,7 +44,9 @@ def main():
                     email=raw["email"],
                     cargo=raw["cargo"],
                     role=UserRole.ADMIN if raw["acesso"] == "Administrador" else UserRole.USER,
-                    password_hash=hash_password("admin123") if not raw["senha"] else hash_password(str(raw["senha"])),
+                    password_hash=hash_password(
+                        sha256_hex_utf8((str(raw["senha"]).strip() if raw.get("senha") else "") or "admin123")
+                    ),
                     ativo=bool(raw["ativo"]),
                 )
             )

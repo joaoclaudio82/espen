@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -16,6 +17,17 @@ class Settings(BaseSettings):
     admin_password: str = "admin123"
 
     cors_origins: str = "http://127.0.0.1:5500,http://localhost:5500"
+
+    #: Injetado pelo Railway; quando definido, ativa redirecionamento HTTP→HTTPS e HSTS na API.
+    railway_environment: str | None = Field(default=None, validation_alias="RAILWAY_ENVIRONMENT")
+    #: Força HTTPS na API mesmo fora do Railway (ex.: `true` em staging).
+    force_https: bool = Field(default=False, validation_alias="FORCE_HTTPS")
+
+    @property
+    def effective_force_https(self) -> bool:
+        if self.force_https:
+            return True
+        return bool((self.railway_environment or "").strip())
 
     @property
     def cors_origins_list(self) -> list[str]:

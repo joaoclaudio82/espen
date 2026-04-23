@@ -3,6 +3,15 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<script>
+(function () {
+  var h = String(window.location.hostname || '');
+  var local = h === 'localhost' || h === '127.0.0.1' || h === '';
+  if (!local && window.location.protocol === 'http:') {
+    window.location.replace('https:' + window.location.href.slice(window.location.protocol.length));
+  }
+})();
+</script>
 <title>ESPEN — Sistema de Gestão por Competências</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css">
@@ -905,7 +914,7 @@ textarea.field-sugerido, input.field-sugerido { border-color: #e65100 !important
     </div>
 
     <!-- LOGIN FORM -->
-    <form id="login-form" class="auth-form active" onsubmit="event.preventDefault();doLogin()">
+    <form id="login-form" class="auth-form active" onsubmit="event.preventDefault();void doLogin();">
       <div class="form-group">
         <label>CPF</label>
         <input type="text" id="login-cpf" placeholder="000.000.000-00" maxlength="14" oninput="maskCPF(this)" autocomplete="username">
@@ -919,7 +928,7 @@ textarea.field-sugerido, input.field-sugerido { border-color: #e65100 !important
     </form>
 
     <!-- REGISTER FORM -->
-    <form id="register-form" class="auth-form" onsubmit="event.preventDefault();doRegister()">
+    <form id="register-form" class="auth-form" onsubmit="event.preventDefault();void doRegister();">
       <div class="form-group">
         <label>CPF *</label>
         <input type="text" id="reg-cpf" placeholder="000.000.000-00" maxlength="14" oninput="maskCPF(this);validateRegisterCPF(true)" onblur="validateRegisterCPF()" autocomplete="username">
@@ -1204,11 +1213,35 @@ function apiRequest(method, path, body = null, useAuth = true) {
       const payload = JSON.parse(xhr.responseText || '{}');
       if (payload.detail) detail = payload.detail;
     } catch (_) {}
-    throw new Error(detail);
+    const err = new Error(detail);
+    err.status = xhr.status;
+    throw err;
   }
 
   if (!xhr.responseText) return null;
   try { return JSON.parse(xhr.responseText); } catch (_) { return null; }
+}
+
+/** True quando a API é a instância local (permite fallback legado de login só em desenvolvimento). */
+function isLocalDevApiHost() {
+  try {
+    const u = new URL(API_BASE, window.location.origin);
+    const h = (u.hostname || '').toLowerCase();
+    return h === '127.0.0.1' || h === 'localhost' || h === '0.0.0.0';
+  } catch (_) {
+    return false;
+  }
+}
+
+/** SHA-256 (hex minúsculo) da string em UTF-8 — enviado à API no lugar da senha em texto plano. */
+async function sha256HexUtf8(plain) {
+  if (!plain) return '';
+  if (!window.crypto || !window.crypto.subtle) {
+    throw new Error('Ambiente sem Web Crypto (use HTTPS ou localhost) para envio seguro da senha.');
+  }
+  const enc = new TextEncoder().encode(plain);
+  const buf = await crypto.subtle.digest('SHA-256', enc);
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 // ================================================================
@@ -1917,26 +1950,41 @@ function validateRegisterCPF(skipIncomplete = false) {
   return isValid;
 }
 
-function doLogin() {
+async function doLogin() {
   const cpf = document.getElementById('login-cpf').value.trim();
   const senha = document.getElementById('login-senha').value;
   if (!cpf || !senha) { showToast('Preencha CPF e senha', 'warning'); return; }
   if (!validateCPF(cpf)) { showToast('CPF inválido. Verifique os dígitos.', 'error'); return; }
 
-  try {
-    const response = apiRequest('POST', '/auth/login', { cpf, senha }, false);
+  function onLoginSuccess(response) {
     authToken = response.access_token;
     localStorage.setItem(AUTH_TOKEN_KEY, authToken);
     currentUser = response.user;
     setStorage(STORAGE_KEYS.session, { userId: response.user.id, cpf: response.user.cpf, loginTime: Date.now() });
     invalidateUsersCache();
     enterApp();
+  }
+
+  try {
+    const senhaWire = await sha256HexUtf8(senha);
+    const response = apiRequest('POST', '/auth/login', { cpf, senha: senhaWire }, false);
+    onLoginSuccess(response);
   } catch (err) {
+    if (err.status === 401 && isLocalDevApiHost()) {
+      try {
+        const response = apiRequest('POST', '/auth/login', { cpf, senha }, false);
+        onLoginSuccess(response);
+        console.warn('[ESPEN] Login com senha em texto plano (fallback só em API local); após sucesso o servidor migra o hash.');
+      } catch (err2) {
+        showToast(err2.message || 'CPF ou senha inválidos', 'error');
+      }
+      return;
+    }
     showToast(err.message || 'CPF ou senha inválidos', 'error');
   }
 }
 
-function doRegister() {
+async function doRegister() {
   const cpf = document.getElementById('reg-cpf').value.trim();
   const nome = document.getElementById('reg-nome').value.trim();
   const email = document.getElementById('reg-email').value.trim();
@@ -1953,7 +2001,8 @@ function doRegister() {
   if (senha !== confirma) { showToast('As senhas não coincidem', 'error'); return; }
 
   try {
-    apiRequest('POST', '/auth/register', { cpf, nome, email, cargo, acesso: 'Usuário', senha }, false);
+    const senhaWire = await sha256HexUtf8(senha);
+    apiRequest('POST', '/auth/register', { cpf, nome, email, cargo, acesso: 'Usuário', senha: senhaWire }, false);
     showToast('Cadastro recebido. Quando um administrador aprovar sua conta, você poderá entrar no sistema.', 'success');
     switchAuthTab('login');
     document.getElementById('login-cpf').value = cpf;
@@ -4779,14 +4828,14 @@ function openUserForm(id = null) {
   `;
   const footer = `
     <button class="btn btn-secondary" onclick="closeModalBtn()">Cancelar</button>
-    <button class="btn btn-primary" onclick="saveUser()"><i class="fas fa-save"></i> ${id?'Salvar':'Cadastrar'}</button>
+    <button class="btn btn-primary" onclick="void saveUser();"><i class="fas fa-save"></i> ${id?'Salvar':'Cadastrar'}</button>
   `;
   openModal(id ? 'Editar Usuário' : 'Novo Usuário', `<input type="hidden" id="uf-row-id" value="${id||''}">${body}`, footer, false);
 }
 
 function editUser(id) { openUserForm(id); }
 
-function saveUser() {
+async function saveUser() {
   const id = (document.getElementById('uf-row-id') && document.getElementById('uf-row-id').value) || '';
   const cpf = document.getElementById('uf-cpf').value.trim();
   const nome = document.getElementById('uf-nome').value.trim();
@@ -4808,10 +4857,11 @@ function saveUser() {
   try {
     if (id) {
       const body = { nome, email, cargo, acesso };
-      if (senha) body.senha = senha;
+      if (senha) body.senha = await sha256HexUtf8(senha);
       apiRequest('PUT', `/users/${id}`, body);
     } else {
-      apiRequest('POST', '/users', { cpf, nome, email, cargo, acesso, senha });
+      const senhaWire = await sha256HexUtf8(senha);
+      apiRequest('POST', '/users', { cpf, nome, email, cargo, acesso, senha: senhaWire });
     }
     invalidateUsersCache();
     closeModalBtn();
@@ -4930,11 +4980,11 @@ function openChangePassword() {
   `;
   openModal('Alterar Senha', body, `
     <button class="btn btn-secondary" onclick="closeModalBtn()">Cancelar</button>
-    <button class="btn btn-primary" onclick="changePassword()"><i class="fas fa-key"></i> Alterar Senha</button>
+    <button class="btn btn-primary" onclick="void changePassword();"><i class="fas fa-key"></i> Alterar Senha</button>
   `);
 }
 
-function changePassword() {
+async function changePassword() {
   const atual = document.getElementById('cp-atual').value;
   const nova = document.getElementById('cp-nova').value;
   const confirma = document.getElementById('cp-confirma').value;
@@ -4942,7 +4992,9 @@ function changePassword() {
   if (nova.length < 6) { showToast('Nova senha deve ter no mínimo 6 caracteres', 'warning'); return; }
   if (nova !== confirma) { showToast('As senhas não coincidem', 'error'); return; }
   try {
-    apiRequest('POST', '/users/change-password', { senha_atual: atual, nova_senha: nova });
+    const senhaAtualWire = await sha256HexUtf8(atual);
+    const novaSenhaWire = await sha256HexUtf8(nova);
+    apiRequest('POST', '/users/change-password', { senha_atual: senhaAtualWire, nova_senha: novaSenhaWire });
     closeModalBtn();
     showToast('Senha alterada com sucesso!', 'success');
   } catch (err) {

@@ -52,7 +52,13 @@ class UserUpdate(BaseModel):
 
 class LoginRequest(BaseModel):
     cpf: str
-    senha: str
+    senha: str = Field(
+        ...,
+        description=(
+            "SHA-256 em hexadecimal (64 caracteres, minúsculo) da senha UTF-8. "
+            "Compatível com clientes legados que ainda enviam a senha em texto plano (migração)."
+        ),
+    )
 
     @field_validator("cpf")
     @classmethod

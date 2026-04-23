@@ -7,7 +7,7 @@ from ..database import get_db
 from ..deps import get_current_user
 from ..models import User, UserRole
 from ..schemas import LoginRequest, TokenResponse, UserCreate, UserOut
-from ..security import create_access_token, hash_password, verify_password
+from ..security import create_access_token, hash_password, is_sha256_hex, sha256_hex_utf8, verify_password
 
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -23,8 +23,15 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Cadastro inativo ou aguardando aprovação do administrador. Contate a equipe ESPEN.",
         )
-    if not verify_password(payload.senha, user.password_hash):
+    wire = (payload.senha or "").strip()
+    if not verify_password(wire, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="CPF ou senha inválidos")
+
+    # Migração: hashes antigos eram PBKDF2 da senha em texto plano; o cliente atual envia SHA-256 em hex.
+    if not is_sha256_hex(wire):
+        user.password_hash = hash_password(sha256_hex_utf8(wire))
+        db.add(user)
+        db.commit()
 
     token = create_access_token(user.id)
     return TokenResponse(access_token=token, user=to_user_out(user))

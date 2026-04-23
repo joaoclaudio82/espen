@@ -28,6 +28,16 @@ python -m scripts.run_sql_migration
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8001
 ```
 
+### Railway / proxy reverso
+
+Para `X-Forwarded-Proto` / `X-Forwarded-Host` funcionarem (redirecionamento HTTP→HTTPS e HSTS na API), suba o Uvicorn com:
+
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips='*'
+```
+
+Com `RAILWAY_ENVIRONMENT` definido (padrão no Railway) ou `FORCE_HTTPS=true`, o middleware de HTTPS é ativado. Veja `.env.example`.
+
 Obs.: o `docker-compose.yml` deste projeto publica o PostgreSQL na porta `5433`.
 
 ## Endpoints principais

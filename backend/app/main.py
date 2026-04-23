@@ -5,8 +5,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
 from .database import Base, SessionLocal, engine
+from .middleware_https import ForceHTTPSMiddleware
 from .routers import acoes, auth, matriz, pdi, storage, trilhas, users
-from .seed import ensure_admin_user
+from .seed import ensure_admin_user, upgrade_default_admin_password_wire
 
 
 @asynccontextmanager
@@ -14,6 +15,7 @@ async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
     with SessionLocal() as db:
         ensure_admin_user(db)
+        upgrade_default_admin_password_wire(db)
     yield
 
 
@@ -26,6 +28,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Registrado por último = executa primeiro na requisição (redireciona antes do restante).
+app.add_middleware(ForceHTTPSMiddleware)
 
 app.include_router(auth.router)
 app.include_router(users.router)
