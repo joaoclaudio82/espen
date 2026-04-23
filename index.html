@@ -1863,17 +1863,35 @@ function getRowValue(row, aliases) {
   return '';
 }
 
+/** Valor da linha: aliases fixos primeiro; depois qualquer coluna cujo nome normalizado inclua `needle` (exceto substrings em `exclude`). */
+function getRowValueFuzzy(row, aliases, needle, exclude) {
+  const direct = getRowValue(row, aliases);
+  if (String(direct || '').trim()) return direct;
+  if (!needle) return '';
+  const ex = exclude || [];
+  for (const key of Object.keys(row)) {
+    if (!key.includes(needle)) continue;
+    if (ex.some((s) => key.includes(s))) continue;
+    const v = row[key];
+    if (v !== undefined && v !== null && String(v).trim() !== '') return v;
+  }
+  return '';
+}
+
 /** Carga horária (> 0) para importação; retorna null se ausente/ inválida. */
 function cargaHorariaLidaAPlanilha(row) {
   const cargaRaw = getRowValue(row, [
-    'carga_horaria', 'ch', 'carga', '13_carga_horaria', 'horas', 'total_horas', 'total_de_horas',
+    'carga_horaria', 'carga_horaria_h_a', 'carga_horaria_h', 'ch', 'carga', '13_carga_horaria',
+    '13_carga_horaria_h_a', '13_carga_horaria_h', 'horas', 'horas_totais', 'total_horas', 'total_de_horas',
+    'total_de_horas_h', 'quantidade_de_horas', 'n_de_horas', 'numero_de_horas',
     'carga_h', 'h', 'cargahoraria', 'carga_hora', 'carga_de_horas', 'carga_horria',
   ]);
   const s = cargaRaw !== '' && cargaRaw != null ? String(cargaRaw).replace(/\s/g, '').replace(',', '.').trim() : '';
   if (!s) return null;
-  const n = parseInt(s, 10);
-  if (!Number.isFinite(n) || Number.isNaN(n) || n <= 0) return null;
-  return n;
+  const f = parseFloat(s);
+  if (!Number.isFinite(f) || f <= 0) return null;
+  const n = Math.round(f);
+  return n > 0 ? n : null;
 }
 
 function parseBool(value) {
@@ -1886,7 +1904,64 @@ function parseIdList(value) {
   return String(value).split(/[;,]/).map(x => x.trim()).filter(Boolean);
 }
 
-function readExcelRows(file) {
+function excelSheetToArrayOfArrays(ws) {
+  return XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false });
+}
+
+/** Pontua uma linha como possível cabeçalho da matriz (evita planilhas com título nas primeiras linhas). */
+function scorePotentialMatrizHeaderRow(cellValues) {
+  let score = 0;
+  for (const raw of cellValues) {
+    const h = normalizeExcelHeader(raw);
+    if (!h || h.length < 2) continue;
+    if (h.includes('competencia') || h === 'competencias') score += 3;
+    if (h.includes('categoria')) score += 2;
+    if (h.includes('cargo')) score += 2;
+    if (h.includes('objetivo')) score += 2;
+    if (h.includes('subcategoria')) score += 1;
+    if (h.includes('eixo')) score += 1;
+    if (h.includes('unidade')) score += 1;
+    if (h.includes('conhecimento')) score += 1;
+    if (h.includes('tipologia')) score += 1;
+    if (h === 'matriz' || (h.includes('matriz') && h.length <= 36)) score += 1;
+  }
+  return score;
+}
+
+function scorePotentialAcoesHeaderRow(cellValues) {
+  let score = 0;
+  for (const raw of cellValues) {
+    const h = normalizeExcelHeader(raw);
+    if (!h) continue;
+    if (h.includes('nome') && (h.includes('acao') || h.includes('a_o') || h.includes('curso'))) score += 3;
+    if (h === 'nome' || h.includes('nome_da_acao')) score += 2;
+    if (h.includes('carga') && h.includes('hor')) score += 2;
+    if (h.includes('carga_horaria') || h === 'ch') score += 2;
+    if (h.includes('objetivo')) score += 2;
+    if (h.includes('codigo')) score += 1;
+  }
+  return score;
+}
+
+function rowsFromAoA(aoa, headerRowIndex) {
+  const headerCells = aoa[headerRowIndex] || [];
+  const headers = headerCells.map((c) => normalizeExcelHeader(c));
+  const rows = [];
+  for (let r = headerRowIndex + 1; r < aoa.length; r++) {
+    const line = aoa[r];
+    if (!line || !line.some((cell) => String(cell || '').trim() !== '')) continue;
+    const normalized = {};
+    headers.forEach((key, c) => {
+      if (!key) return;
+      const v = line[c];
+      normalized[key] = typeof v === 'string' ? v.trim() : v;
+    });
+    rows.push(normalized);
+  }
+  return rows;
+}
+
+function readExcelRows(file, moduleKey) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = () => reject(new Error('Falha ao ler o arquivo Excel.'));
@@ -1894,16 +1969,45 @@ function readExcelRows(file) {
       try {
         const data = new Uint8Array(e.target.result);
         const wb = XLSX.read(data, { type: 'array' });
-        const firstSheet = wb.SheetNames[0];
-        const ws = wb.Sheets[firstSheet];
-        const rows = XLSX.utils.sheet_to_json(ws, { defval: '' }).map((raw) => {
-          const normalized = {};
-          Object.entries(raw).forEach(([k, v]) => {
-            normalized[normalizeExcelHeader(k)] = typeof v === 'string' ? v.trim() : v;
-          });
-          return normalized;
-        });
-        resolve(rows);
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const aoa = excelSheetToArrayOfArrays(ws);
+
+        let headerIdx = 0;
+        if (moduleKey === STORAGE_KEYS.matriz && aoa.length > 1) {
+          const s0 = scorePotentialMatrizHeaderRow(aoa[0] || []);
+          const s1 = scorePotentialMatrizHeaderRow(aoa[1] || []);
+          /* Ex.: BANCO DE DADOS - MCN-2026-SPB.xlsx: linha 1 = título; linha 2 = cabeçalhos; dados a partir da 3. */
+          if (s1 >= 8 && s1 > s0) {
+            headerIdx = 1;
+          } else {
+            let best = 0;
+            let bestScore = s0;
+            for (let i = 1; i < Math.min(aoa.length, 50); i++) {
+              const s = scorePotentialMatrizHeaderRow(aoa[i] || []);
+              if (s > bestScore) {
+                bestScore = s;
+                best = i;
+              }
+            }
+            if (bestScore >= 8) headerIdx = best;
+          }
+        } else if (moduleKey === STORAGE_KEYS.acoes && aoa.length > 1) {
+          let best = 0;
+          let bestScore = scorePotentialAcoesHeaderRow(aoa[0] || []);
+          for (let i = 1; i < Math.min(aoa.length, 50); i++) {
+            const s = scorePotentialAcoesHeaderRow(aoa[i] || []);
+            if (s > bestScore) {
+              bestScore = s;
+              best = i;
+            }
+          }
+          if (bestScore >= 5) headerIdx = best;
+        }
+
+        const rows = rowsFromAoA(aoa, headerIdx);
+        /* Linha 1-based do Excel onde começa o 1.º registro de dados (cabeçalho na linha anterior). */
+        const firstDataExcelRow = headerIdx + 2;
+        resolve({ rows, firstDataExcelRow });
       } catch (err) {
         reject(err);
       }
@@ -1914,18 +2018,40 @@ function readExcelRows(file) {
 
 function buildMatrizImportRecord(row) {
   return {
-    id: getRowValue(row, ['id']) || genId(),
-    competencia: getRowValue(row, ['competencia']),
-    categoria: getRowValue(row, ['categoria']),
-    subcategoria: getRowValue(row, ['subcategoria']),
-    cargo: getRowValue(row, ['cargo']),
-    eixo: getRowValue(row, ['eixo', 'eixo_funcional']),
-    unidade: getRowValue(row, ['unidade', 'unidade_tematica']),
-    conhecimento: getRowValue(row, ['conhecimento', 'conhecimento_critico']),
-    tipologia_objetivo: getRowValue(row, ['tipologia_objetivo']),
-    tipologia_complexidade: getRowValue(row, ['tipologia_complexidade']),
-    matriz: getRowValue(row, ['matriz', 'ano_matriz', 'ano']) || '2026',
-    objetivo: getRowValue(row, ['objetivo', 'objetivo_aprendizagem']),
+    id: getRowValue(row, ['id', 'id_registro', 'id_competencia', 'id_mcn', 'id_matriz']) || genId(),
+    competencia: getRowValueFuzzy(row, [
+      'competencia',
+      'competencias',
+      'competencia_capacidades_de_para',
+      'competencia_mcn',
+      'nome_da_competencia',
+      'descricao_da_competencia',
+      '1_competencia',
+      '2_competencia',
+      'item_competencia',
+    ], 'competencia', ['subcategoria', 'categoria']),
+    categoria: getRowValueFuzzy(row, ['categoria', 'categoria_funcional', '1_categoria', '2_categoria'], 'categoria', ['subcategoria']),
+    subcategoria: getRowValueFuzzy(row, ['subcategoria', 'sub_categoria', '1_subcategoria'], 'subcategoria', []),
+    cargo: getRowValueFuzzy(row, ['cargo', 'cargo_alvo', 'perfil', '1_cargo', '2_cargo'], 'cargo', []),
+    eixo: getRowValueFuzzy(row, ['eixo', 'eixo_funcional', 'eixo_funcional_mcn', '1_eixo'], 'eixo', []),
+    unidade: getRowValueFuzzy(row, ['unidade', 'unidade_tematica', 'unidade_tematica_mcn', '1_unidade'], 'unidade', []),
+    conhecimento: getRowValueFuzzy(row, [
+      'conhecimento',
+      'conhecimento_critico',
+      'conhecimento_critico_e_para_pratica',
+      'conhecimento_critico_e_para_a_pratica',
+    ], 'conhecimento', []),
+    tipologia_objetivo: getRowValueFuzzy(row, ['tipologia_objetivo', 'tipologia_do_objetivo'], 'tipologia_objetivo', ['complexidade']),
+    tipologia_complexidade: getRowValueFuzzy(row, ['tipologia_complexidade', 'tipologia_de_complexidade', 'complexidade'], 'tipologia_complexidade', []),
+    matriz: getRowValue(row, ['matriz', 'matriz_de_referencia', 'ano_matriz', 'ano', 'referencia_matriz']) || '2026',
+    objetivo: getRowValueFuzzy(row, [
+      'objetivo',
+      'objetivo_aprendizagem',
+      'objetivo_de_aprendizagem',
+      'objetivo_da_competencia',
+      'objetivo_de_aprendizagem_da_competencia',
+      '1_objetivo',
+    ], 'objetivo', []),
   };
 }
 
@@ -2084,9 +2210,10 @@ function buildPlanoEnsinoImportRecord(row, users, trilhas) {
   };
 }
 
-function transformExcelRows(moduleKey, rows) {
+function transformExcelRows(moduleKey, rows, firstDataExcelRow) {
   const valid = [];
   const invalid = [];
+  const lineBase = firstDataExcelRow != null && firstDataExcelRow > 0 ? firstDataExcelRow : 2;
   const acoes = getStorage(STORAGE_KEYS.acoes) || [];
   const users = getStorage(STORAGE_KEYS.users) || [];
   const trilhas = getStorage(STORAGE_KEYS.trilhas) || [];
@@ -2097,7 +2224,17 @@ function transformExcelRows(moduleKey, rows) {
       let rec = null;
       if (moduleKey === STORAGE_KEYS.matriz) {
         rec = buildMatrizImportRecord(row);
-        if (!rec.competencia || !rec.categoria || !rec.cargo || !rec.objetivo) throw new Error('Campos obrigatórios da matriz ausentes');
+        const faltam = [];
+        if (!String(rec.competencia || '').trim()) faltam.push('competência');
+        if (!String(rec.categoria || '').trim()) faltam.push('categoria');
+        if (!String(rec.cargo || '').trim()) faltam.push('cargo');
+        if (!String(rec.objetivo || '').trim()) faltam.push('objetivo / objetivo de aprendizagem');
+        if (faltam.length) {
+          throw new Error(
+            'Matriz: ausente(s): ' + faltam.join(', ') +
+            '. Cabeçalhos aceitos incluem competencia, "Competência", objetivo, "Objetivo de Aprendizagem", categoria, cargo (e export CSV do sistema).'
+          );
+        }
       } else if (moduleKey === STORAGE_KEYS.acoes) {
         rec = buildAcoesImportRecord(row);
         const chOk = cargaHorariaLidaAPlanilha(row);
@@ -2109,9 +2246,9 @@ function transformExcelRows(moduleKey, rows) {
           throw new Error('Objetivo geral vazio (objetivo_geral, objetivo, competência ou conteúdos).');
         }
         if (chOk == null) {
-          throw new Error('Carga horária ausente ou inválida. Use carga_horaria, ch, horas ou 13_carga_horaria (número > 0).');
+          throw new Error('Carga horária ausente ou inválida. Use coluna carga_horaria, "Carga Horária (h/a)", ch, horas ou 13_carga_horaria (número > 0).');
         }
-        const idNaPlanilha = String(getRowValue(row, ['id', 'id_registro', 'id_acao']) || '').trim();
+        const idNaPlanilha = String(getRowValue(row, ['id', 'id_registro', 'id_acao', 'id_acao_educativa']) || '').trim();
         const cn = normalizeActionCode(rec.codigo);
         if (cn) {
           if (codigosAcoesNaPlanilha.has(cn)) {
@@ -2145,7 +2282,7 @@ function transformExcelRows(moduleKey, rows) {
       if (!rec) throw new Error('Registro não mapeado');
       valid.push(rec);
     } catch (err) {
-      invalid.push({ line: idx + 2, error: err.message });
+      invalid.push({ line: lineBase + idx, error: err.message });
     }
   });
 
@@ -2203,17 +2340,21 @@ function importExcelData(moduleKey) {
     if (!file) return;
 
     try {
-      const rows = await readExcelRows(file);
+      const { rows, firstDataExcelRow } = await readExcelRows(file, moduleKey);
       if (!rows.length) {
         showToast('Planilha sem dados para importar.', 'warning');
         return;
       }
 
-      const { valid, invalid } = transformExcelRows(moduleKey, rows);
+      const { valid, invalid } = transformExcelRows(moduleKey, rows, firstDataExcelRow);
       if (!valid.length) {
         const amostra = (invalid || []).slice(0, 3).map((i) => `Linha ${i.line}: ${i.error}`).join(' ');
         showToast(
-          'Nenhuma linha válida. ' + (amostra ? amostra + (invalid.length > 3 ? ' …' : '') : 'Verifique cabeçalhos e carga horária.'),
+          'Nenhuma linha válida. ' +
+            (amostra ? amostra + (invalid.length > 3 ? ' …' : '') :
+              (moduleKey === STORAGE_KEYS.matriz
+                ? 'Verifique competência, categoria, cargo e objetivo (ou exporte CSV da tela da matriz e reabra como Excel).'
+                : 'Verifique cabeçalhos e carga horária.')),
           'error'
         );
         return;
@@ -2228,7 +2369,7 @@ function importExcelData(moduleKey) {
       let payload;
       if (replaceAll) {
         payload = valid;
-      } else if (moduleKey === STORAGE_KEYS.acoes) {
+      } else if (moduleKey === STORAGE_KEYS.acoes || moduleKey === STORAGE_KEYS.matriz) {
         const byId = new Map((existing || []).map((x) => [String(x.id), { ...x }]));
         valid.forEach((v) => {
           const k = String(v.id);
@@ -2247,10 +2388,10 @@ function importExcelData(moduleKey) {
       const res = resumoMensagemImportacao(moduleKey, replaceAll, existing, valid, invalid.length);
       showToast(res.text, res.toastType);
 
-      if (moduleKey === STORAGE_KEYS.matriz) renderMatrizTable();
-      if (moduleKey === STORAGE_KEYS.acoes) renderAcoesGrid();
-      if (moduleKey === STORAGE_KEYS.trilhas) renderTrilhas();
-      if (moduleKey === STORAGE_KEYS.pdi) renderPDI();
+      if (moduleKey === STORAGE_KEYS.matriz && document.getElementById('matriz-table-content')) renderMatrizTable();
+      if (moduleKey === STORAGE_KEYS.acoes && document.getElementById('acoes-grid')) renderAcoesGrid();
+      if (moduleKey === STORAGE_KEYS.trilhas && typeof renderTrilhas === 'function') renderTrilhas();
+      if (moduleKey === STORAGE_KEYS.pdi && typeof renderPDI === 'function') renderPDI();
     } catch (err) {
       showToast(`Falha na importação: ${err.message}`, 'error');
     }
@@ -2632,6 +2773,8 @@ function getFilteredMatriz() {
 }
 
 function renderMatrizTable() {
+  const wrap = document.getElementById('matriz-table-content');
+  if (!wrap) return;
   const data = getFilteredMatriz();
   const total = data.length;
   const totalPages = Math.ceil(total / matrizPerPage);
@@ -2705,7 +2848,7 @@ function renderMatrizTable() {
     </div>
   `;
 
-  document.getElementById('matriz-table-content').innerHTML = html;
+  wrap.innerHTML = html;
 }
 
 function getPaginationButtons(current, total, pageVar, callFn) {
@@ -2953,8 +3096,8 @@ function deleteMatriz(id) {
 
 function exportMatrizCSV() {
   const data = getFilteredMatriz();
-  const headers = ['Competência','Categoria','Subcategoria','Cargo','Eixo Funcional','Unidade Temática','Conhecimento Crítico','Objetivo','Tipologia Objetivo','Tipologia Complexidade','Matriz'];
-  const rows = data.map(r => [r.competencia,r.categoria,r.subcategoria,r.cargo,r.eixo,r.unidade,r.conhecimento,r.objetivo,r.tipologia_objetivo,r.tipologia_complexidade,r.matriz].map(v => `"${(v||'').replace(/"/g,'""')}"`));
+  const headers = ['id','Competência','Categoria','Subcategoria','Cargo','Eixo Funcional','Unidade Temática','Conhecimento Crítico','Objetivo','Tipologia Objetivo','Tipologia Complexidade','Matriz'];
+  const rows = data.map(r => [r.id,r.competencia,r.categoria,r.subcategoria,r.cargo,r.eixo,r.unidade,r.conhecimento,r.objetivo,r.tipologia_objetivo,r.tipologia_complexidade,r.matriz].map(v => `"${(v||'').replace(/"/g,'""')}"`));
   const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
   const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
@@ -3082,6 +3225,8 @@ function renderAcoes() {
 }
 
 function renderAcoesGrid() {
+  const grid = document.getElementById('acoes-grid');
+  if (!grid) return;
   let data = getStorage(STORAGE_KEYS.acoes) || [];
   if (acoesFilter.search) {
     const s = acoesFilter.search.toLowerCase();
@@ -3100,7 +3245,7 @@ function renderAcoesGrid() {
   const sColors = { 'Ativo': 'green', 'Inativo': 'red', 'Em elaboração': 'gold' };
 
   if (data.length === 0) {
-    document.getElementById('acoes-grid').innerHTML = `<div class="empty-state"><i class="fas fa-book-open"></i><h3>Nenhuma ação encontrada</h3><p>Adicione ações educativas para visualizar aqui</p>${!isSomenteLeitura() ? '<button class="btn btn-primary" onclick="openAcaoForm()"><i class="fas fa-plus"></i> Nova Ação</button>' : ''}</div>`;
+    grid.innerHTML = `<div class="empty-state"><i class="fas fa-book-open"></i><h3>Nenhuma ação encontrada</h3><p>Adicione ações educativas para visualizar aqui</p>${!isSomenteLeitura() ? '<button class="btn btn-primary" onclick="openAcaoForm()"><i class="fas fa-plus"></i> Nova Ação</button>' : ''}</div>`;
     return;
   }
 
@@ -3130,7 +3275,7 @@ function renderAcoesGrid() {
       </div>
     `).join('') + `</div>`;
 
-  document.getElementById('acoes-grid').innerHTML = html;
+  grid.innerHTML = html;
 }
 
 function viewAcaoDetail(id) {
