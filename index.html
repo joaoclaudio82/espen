@@ -2249,6 +2249,25 @@ function getMatrizEscopoDashboard(dashSel, acoes, matriz) {
   return { escopo: ativos.filter(r => compSet.has(String(r.id))), matrizEscopoFallback: false };
 }
 
+/** Chave normalizada do nome da competência (ignora cargo e duplicatas por capitalização/espaços). */
+function matrizChaveNomeCompetencia(r) {
+  return String(r && r.competencia != null ? r.competencia : '')
+    .normalize('NFC')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+}
+
+/** Quantidade de competências no escopo contando só nomes diferentes (campo competencia). */
+function countMatrizDistinctCompetenciaNames(rows) {
+  const seen = new Set();
+  (rows || []).forEach((r) => {
+    const k = matrizChaveNomeCompetencia(r);
+    if (k) seen.add(k);
+  });
+  return seen.size;
+}
+
 function navigate(page) {
   currentPage = page;
   // Fechar sidebar no mobile ao navegar
@@ -2928,6 +2947,7 @@ function renderDashboard() {
       ? acoes.filter(a => selIdSet.has(String(a.id)))
       : acoes;
   const { escopo: matrizEscopo, matrizEscopoFallback } = getMatrizEscopoDashboard(dashSel, acoes, matriz);
+  const matrizEscopoNomesDistintos = countMatrizDistinctCompetenciaNames(matrizEscopo);
   const scopeHint = dashSel.mode === 'all'
     ? 'Os gráficos refletem todas as competências ativas da matriz.'
     : dashSel.mode === 'none'
@@ -2969,8 +2989,8 @@ function renderDashboard() {
       <div class="kpi-card blue">
         <div class="kpi-icon"><i class="fas fa-table-cells"></i></div>
         <div>
-          <div class="kpi-number">${matrizEscopo.length}</div>
-          <div class="kpi-label">Competências no escopo (${dashSel.mode === 'all' ? 'todas' : dashSel.mode === 'none' ? 'nenhuma' : 'filtrado'})</div>
+          <div class="kpi-number">${matrizEscopoNomesDistintos}</div>
+          <div class="kpi-label">Competências no escopo — nomes distintos (${dashSel.mode === 'all' ? 'todas' : dashSel.mode === 'none' ? 'nenhuma' : 'filtrado'})</div>
         </div>
       </div>
       <div class="kpi-card gold">
