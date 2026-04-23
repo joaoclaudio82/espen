@@ -84,6 +84,17 @@ class ModeracaoItem(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class ModeracaoHistoricoItem(Base):
+    """Registros de decisões (aprovação/rejeição) da fila de gestores — um JSON por linha."""
+
+    __tablename__ = "moderacao_historico_items"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    data: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class TrilhaAcao(Base):
     __tablename__ = "trilha_acoes"
 

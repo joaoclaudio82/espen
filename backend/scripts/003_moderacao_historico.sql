@@ -1,0 +1,6 @@
+CREATE TABLE IF NOT EXISTS moderacao_historico_items (
+  id VARCHAR(36) PRIMARY KEY,
+  data JSONB NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);

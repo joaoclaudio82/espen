@@ -8,6 +8,7 @@ from .models import (
     AcaoItem,
     DashboardPreferenceItem,
     MatrizItem,
+    ModeracaoHistoricoItem,
     ModeracaoItem,
     PdiItem,
     TrilhaItem,
@@ -18,7 +19,15 @@ from .schemas import UserOut
 
 
 STORAGE_TABLES: dict[
-    str, Type[MatrizItem | AcaoItem | TrilhaItem | PdiItem | DashboardPreferenceItem | ModeracaoItem]
+    str, Type[
+        MatrizItem
+        | AcaoItem
+        | TrilhaItem
+        | PdiItem
+        | DashboardPreferenceItem
+        | ModeracaoItem
+        | ModeracaoHistoricoItem
+    ]
 ] = {
     "espen_matriz": MatrizItem,
     "espen_acoes": AcaoItem,
@@ -26,6 +35,7 @@ STORAGE_TABLES: dict[
     "espen_pdi": PdiItem,
     "espen_dashboard": DashboardPreferenceItem,
     "espen_moderacao": ModeracaoItem,
+    "espen_moderacao_historico": ModeracaoHistoricoItem,
 }
 
 
@@ -80,7 +90,15 @@ def read_storage_items(db: Session, key: str) -> list[dict]:
     if not table:
         return []
     rows = db.scalars(select(table).order_by(table.created_at.asc())).all()
-    return [row.data for row in rows]
+    out: list[dict] = []
+    for row in rows:
+        d = dict(row.data) if row.data else {}
+        # Garantir id no objeto (alguns legados tinham só PK na linha; o front depende de data.id)
+        rid = getattr(row, "id", None)
+        if rid is not None and not d.get("id"):
+            d["id"] = rid
+        out.append(d)
+    return out
 
 
 def clear_storage(db: Session, key: str) -> None:

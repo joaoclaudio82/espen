@@ -13,11 +13,13 @@ router = APIRouter(prefix="/api/storage", tags=["storage"])
 
 
 @router.get("/{key}")
-def get_storage_items(key: str, _: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def get_storage_items(key: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if key == "espen_users":
         raise HTTPException(status_code=400, detail="Use endpoints /api/users para usuários")
     if key not in STORAGE_TABLES:
         raise HTTPException(status_code=404, detail="Chave de storage não suportada")
+    if key == "espen_moderacao_historico" and user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=403, detail="Acesso restrito ao administrador")
     return {"items": read_storage_items(db, key)}
 
 
