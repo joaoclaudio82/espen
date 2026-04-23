@@ -931,8 +931,14 @@ textarea.field-sugerido, input.field-sugerido { border-color: #e65100 !important
 </div>
 
 <script>
-  window.ESPEN_API_BASE = 'https://backend-production-87a7.up.railway.app/api';
-  //window.ESPEN_API_BASE = 'http://127.0.0.1:8001/api';
+  /* Em localhost / 127.0.0.1 / file:// usa API local; caso contrário, produção (Railway). */
+  (function () {
+    const h = String(window.location.hostname || '');
+    const localHosts = ['127.0.0.1', 'localhost', '0.0.0.0', ''];
+    window.ESPEN_API_BASE = localHosts.includes(h)
+      ? 'http://127.0.0.1:8001/api'
+      : 'https://backend-production-87a7.up.railway.app/api';
+  })();
 </script>
 
 <script>
