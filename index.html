@@ -176,21 +176,24 @@ html, body { height: 100%; font-family: 'Inter', sans-serif; background: var(--g
   min-height: 0;
 }
 .sidebar-header {
-  padding: 16px 18px;
+  padding: 18px 18px 16px;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   flex-shrink: 0;
   border-bottom: 1px solid rgba(255,255,255,0.08);
   overflow: visible;
 }
 .sidebar-header > div:not(.sidebar-logo) {
-  flex: 1;
+  flex: unset;
+  width: 100%;
   min-width: 0;
+  text-align: center;
 }
 .sidebar-logo {
-  width: 60px;
-  height: 48px;
+  width: 128px;
+  height: 84px;
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -199,13 +202,13 @@ html, body { height: 100%; font-family: 'Inter', sans-serif; background: var(--g
 .sidebar-logo .brand-logo-img {
   width: 100%;
   height: 100%;
-  max-height: 48px;
+  max-height: 84px;
   object-fit: contain;
-  object-position: left center;
+  object-position: center;
   display: block;
 }
-.sidebar-title { color: white; font-size: 13px; font-weight: 700; line-height: 1.35; }
-.sidebar-subtitle { color: rgba(255,255,255,0.5); font-size: 10px; line-height: 1.3; }
+.sidebar-title { color: white; font-size: 15px; font-weight: 700; line-height: 1.3; }
+.sidebar-subtitle { color: rgba(255,255,255,0.6); font-size: 11px; line-height: 1.3; }
 /* Resumo do usuário logado (substitui o antigo “Olá, …”) */
 .sidebar-user-preview {
   flex-shrink: 0;
@@ -3523,6 +3526,9 @@ function exportMatrizCSV() {
 // AÇÕES EDUCATIVAS
 // ================================================================
 let acoesFilter = { search: '', modalidade: '', status: '', competenciaMatrizId: '' };
+let acoesViewMode = 'cards';
+let acoesPage = 1;
+const acoesPerPage = 15;
 
 function tokenizarTexto(t) {
   return String(t || '')
@@ -3608,39 +3614,47 @@ function renderAcoes() {
     <div class="filters-bar">
       <div class="search-box" style="flex:2;">
         <i class="fas fa-search"></i>
-        <input type="text" placeholder="Buscar ações educativas..." oninput="acoesFilter.search=this.value;renderAcoesGrid()">
+        <input type="text" placeholder="Buscar ações educativas..." oninput="acoesFilter.search=this.value;acoesPage=1;renderAcoesGrid()">
       </div>
       <div class="filter-group">
         <label>Modalidade</label>
-        <select onchange="acoesFilter.modalidade=this.value;renderAcoesGrid()">
+        <select onchange="acoesFilter.modalidade=this.value;acoesPage=1;renderAcoesGrid()">
           <option value="">Todas</option>
           <option>EaD</option><option>Presencial</option><option>Semipresencial</option><option>Híbrido</option>
         </select>
       </div>
       <div class="filter-group">
         <label>Status</label>
-        <select onchange="acoesFilter.status=this.value;renderAcoesGrid()">
+        <select onchange="acoesFilter.status=this.value;acoesPage=1;renderAcoesGrid()">
           <option value="">Todos</option>
           <option>Ativo</option><option>Inativo</option><option>Em elaboração</option>
         </select>
       </div>
       <div class="filter-group" style="min-width:220px;">
         <label>Competência (matriz)</label>
-        <select id="ac-filter-comp" onchange="acoesFilter.competenciaMatrizId=this.value;renderAcoesGrid()">
+        <select id="ac-filter-comp" onchange="acoesFilter.competenciaMatrizId=this.value;acoesPage=1;renderAcoesGrid()">
           <option value="">Todas</option>
           ${(getStorage(STORAGE_KEYS.matriz)||[]).filter(m => !isMatrizRegistroArquivado(m)).map(m => `<option value="${m.id}">${(m.competencia||'').substring(0,70)}${(m.competencia||'').length>70?'…':''}</option>`).join('')}
         </select>
       </div>
-      <button class="btn btn-secondary btn-sm" onclick="acoesFilter={search:'',modalidade:'',status:'',competenciaMatrizId:''};var el=document.getElementById('ac-filter-comp');if(el)el.value='';renderAcoes()"><i class="fas fa-times"></i></button>
+      <button class="btn btn-secondary btn-sm" onclick="toggleAcoesView()" title="Alternar visualização" style="min-width:150px;">
+        <i class="fas ${acoesViewMode === 'cards' ? 'fa-table' : 'fa-table-cells-large'}"></i>
+        <span class="btn-label">${acoesViewMode === 'cards' ? 'Modo tabela' : 'Modo cards'}</span>
+      </button>
+      <button class="btn btn-secondary btn-sm" onclick="acoesFilter={search:'',modalidade:'',status:'',competenciaMatrizId:''};acoesPage=1;var el=document.getElementById('ac-filter-comp');if(el)el.value='';renderAcoes()"><i class="fas fa-times"></i> Limpar</button>
     </div>
     <div id="acoes-grid"></div>
   `;
   renderAcoesGrid();
 }
 
-function renderAcoesGrid() {
-  const grid = document.getElementById('acoes-grid');
-  if (!grid) return;
+function toggleAcoesView() {
+  acoesViewMode = acoesViewMode === 'cards' ? 'table' : 'cards';
+  acoesPage = 1;
+  renderAcoes();
+}
+
+function getAcoesFilteredData() {
   let data = getStorage(STORAGE_KEYS.acoes) || [];
   if (acoesFilter.search) {
     const s = acoesFilter.search.toLowerCase();
@@ -3653,6 +3667,13 @@ function renderAcoesGrid() {
     const cid = acoesFilter.competenciaMatrizId;
     data = data.filter(a => (a.competencias_vinculadas || []).includes(cid));
   }
+  return data;
+}
+
+function renderAcoesGrid() {
+  const grid = document.getElementById('acoes-grid');
+  if (!grid) return;
+  const data = getAcoesFilteredData();
 
   const podeAlterar = !isSomenteLeitura();
   const mColors = { 'EaD': 'blue', 'Presencial': 'green', 'Semipresencial': 'orange', 'Híbrido': 'gold' };
@@ -3663,7 +3684,60 @@ function renderAcoesGrid() {
     return;
   }
 
-  const html = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:18px;">` +
+  if (acoesViewMode === 'table') {
+    const total = data.length;
+    const totalPages = Math.ceil(total / acoesPerPage);
+    if (acoesPage > totalPages && totalPages > 0) acoesPage = totalPages;
+    const start = (acoesPage - 1) * acoesPerPage;
+    const page = data.slice(start, start + acoesPerPage);
+
+    grid.innerHTML = `
+      <div class="table-card">
+        <div class="table-responsive">
+          <table>
+            <thead>
+              <tr>
+                <th style="min-width:110px;">Código</th>
+                <th style="min-width:280px;">Ação educativa</th>
+                <th>Modalidade</th>
+                <th>Status</th>
+                <th>Carga horária</th>
+                <th>Público-alvo</th>
+                ${podeAlterar ? '<th style="width:120px;">Ações</th>' : ''}
+              </tr>
+            </thead>
+            <tbody>
+              ${page.map(a => `
+                <tr onclick="viewAcaoDetail('${a.id}')" style="cursor:pointer;">
+                  <td><span class="badge badge-purple">${a.codigo||'—'}</span></td>
+                  <td><strong>${a.nome||'—'}</strong></td>
+                  <td><span class="badge badge-${mColors[a.modalidade]||'gray'}">${a.modalidade||'—'}</span></td>
+                  <td><span class="badge badge-${sColors[a.status]||'gray'}">${a.status||'—'}</span></td>
+                  <td>${a.carga_horaria||0}h</td>
+                  <td>${a.publico_alvo||'—'}</td>
+                  ${podeAlterar ? `<td onclick="event.stopPropagation()">
+                    <button class="btn btn-secondary btn-sm" onclick="editAcao('${a.id}')"><i class="fas fa-edit"></i></button>
+                    <button class="btn btn-danger btn-sm" onclick="deleteAcao('${a.id}')"><i class="fas fa-trash"></i></button>
+                  </td>` : ''}
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+        <div class="table-footer">
+          <div class="page-info">Exibindo ${start + 1}–${Math.min(start + acoesPerPage, total)} de <strong>${total}</strong> registros</div>
+          <div class="pagination">
+            <button class="page-btn" onclick="acoesPage=Math.max(1,acoesPage-1);renderAcoesGrid()" ${acoesPage<=1?'disabled':''}><i class="fas fa-chevron-left"></i></button>
+            ${getPaginationButtons(acoesPage, totalPages, 'acoesPage', 'renderAcoesGrid()')}
+            <button class="page-btn" onclick="acoesPage=Math.min(${totalPages},acoesPage+1);renderAcoesGrid()" ${acoesPage>=totalPages?'disabled':''}><i class="fas fa-chevron-right"></i></button>
+          </div>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  grid.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:18px;">` +
     data.map(a => `
       <div class="action-card" onclick="viewAcaoDetail('${a.id}')">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;">
@@ -3688,8 +3762,6 @@ function renderAcoesGrid() {
         </div>
       </div>
     `).join('') + `</div>`;
-
-  grid.innerHTML = html;
 }
 
 function viewAcaoDetail(id) {
