@@ -5,13 +5,6 @@
 
 let pdiState = { data: [], editId: null };
 
-const STATUS_PDI = ['Não iniciado', 'Em andamento', 'Concluído'];
-
-function statusPdiBadge(v) {
-  const map = { 'Não iniciado': 'badge-gray', 'Em andamento': 'badge-gold', Concluído: 'badge-success' };
-  return `<span class="badge ${map[v] || 'badge-gray'}">${v || '—'}</span>`;
-}
-
 /* ── Render ──────────────────────────────────────────────────── */
 function renderPDI() {
   const isAdmin = currentUser?.acesso === 'Administrador';
@@ -96,7 +89,6 @@ function pdiRender() {
             ${user?.nome || 'Servidor não encontrado'}
           </h3>
           <div style="display:flex;gap:8px;align-items:center;">
-            ${statusPdiBadge(p.status)}
             <button class="btn-icon btn-sm" onclick="openPdiForm('${p.id}')"><i class="fas fa-edit"></i></button>
             <button class="btn-icon btn-sm danger" onclick="deletePdi('${p.id}')"><i class="fas fa-trash"></i></button>
           </div>
@@ -164,10 +156,7 @@ function togglePdiAcao(pdiId, acaoIdx) {
   }
   pdi.acoesFeitas[acaoIdx] = !pdi.acoesFeitas[acaoIdx];
 
-  const done = pdi.acoesFeitas.filter(Boolean).length;
-  if (done === 0)     pdi.status = 'Não iniciado';
-  else if (done < total) pdi.status = 'Em andamento';
-  else               pdi.status = 'Concluído';
+  delete pdi.status;
 
   pdi.updatedAt = Date.now();
   localStorage.setItem(LS_PDIS, JSON.stringify(allPdis));
@@ -209,12 +198,6 @@ function openPdiForm(id = null) {
             <label>Data Meta</label>
             <input type="date" class="form-control" id="pf-meta" value="${p?.dataMeta || ''}">
           </div>
-          <div class="form-group">
-            <label>Status</label>
-            <select class="form-control" id="pf-status">
-              ${STATUS_PDI.map(s => `<option value="${s}" ${s === (p?.status || 'Não iniciado') ? 'selected' : ''}>${s}</option>`).join('')}
-            </select>
-          </div>
         </div>
       </div>
     </form>`;
@@ -233,7 +216,6 @@ function savePdi() {
   const trilhaId   = document.getElementById('pf-trilha')?.value;
   const dataInicio = document.getElementById('pf-inicio')?.value;
   const dataMeta   = document.getElementById('pf-meta')?.value;
-  const status     = document.getElementById('pf-status')?.value || 'Não iniciado';
 
   if (!servidorId) { showToast('Selecione o servidor.', 'danger'); return; }
 
@@ -242,7 +224,7 @@ function savePdi() {
   const total   = (trilha?.acoesVinculadas || []).length;
 
   const fields = {
-    servidorId, trilhaId, dataInicio, dataMeta, status,
+    servidorId, trilhaId, dataInicio, dataMeta,
     acoesFeitas: new Array(total).fill(false),
     updatedAt: Date.now(),
   };
@@ -250,16 +232,18 @@ function savePdi() {
   if (pdiState.editId) {
     const idx = allPdis.findIndex(p => p.id === pdiState.editId);
     if (idx !== -1) {
-      // Preserva progresso existente se trilha não mudou
       const existing = allPdis[idx];
       if (existing.trilhaId === trilhaId) fields.acoesFeitas = existing.acoesFeitas;
       allPdis[idx] = { ...existing, ...fields };
+      delete allPdis[idx].status;
     }
     logActivity('update', `PDI de <strong>${servidorId}</strong> atualizado.`);
     showToast('PDI atualizado!', 'success');
   } else {
     const user = JSON.parse(localStorage.getItem(LS_USERS) || '[]').find(u => u.id === servidorId);
-    allPdis.push({ id: generateId('pdi'), ...fields, createdAt: Date.now() });
+    const novo = { id: generateId('pdi'), ...fields, createdAt: Date.now() };
+    delete novo.status;
+    allPdis.push(novo);
     logActivity('create', `Novo PDI criado para <strong>${user?.nome || 'servidor'}</strong>.`);
     showToast('PDI criado!', 'success');
   }
@@ -297,16 +281,12 @@ async function exportPdiDOCX() {
     const user   = users.find(u => u.id === p.servidorId);
     const trilha = trilhas.find(t => t.id === p.trilhaId);
     const acoesT = (trilha?.acoesVinculadas || []).map(id => acoes.find(a => a.id === id)).filter(Boolean);
-    const done   = (p.acoesFeitas || []).filter(Boolean).length;
-    const total  = acoesT.length;
-    const pct    = total > 0 ? Math.round((done / total) * 100) : 0;
 
     sections.push(
       new Paragraph({ children: [new TextRun({ text: `PDI – ${user?.nome || 'Servidor'}`, bold: true, size: 28, color: '1a237e', font: 'Calibri' })] }),
       new Paragraph({ text: '' }),
       ...[ ['Servidor', user?.nome || '—'], ['Cargo', user?.cargo || '—'],
            ['Trilha', trilha?.nome || '—'], ['Cargo-alvo', trilha?.cargoAlvo || '—'],
-           ['Status', p.status], ['Progresso', `${pct}%  (${done}/${total} ações)`],
            ['Data Início', p.dataInicio || '—'], ['Data Meta', p.dataMeta || '—'],
       ].map(([label, val]) =>
         new Paragraph({ children: [

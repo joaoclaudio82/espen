@@ -142,31 +142,17 @@ function renderActivityItem(act) {
 }
 
 function renderPdiSummary(pdis) {
-  const em_andamento = pdis.filter(p => p.status === 'Em andamento').length;
-  const concluidos   = pdis.filter(p => p.status === 'Concluído').length;
-  const nao_iniciados = pdis.filter(p => p.status === 'Não iniciado').length;
+  const n = (pdis || []).length;
   return `
     <div class="card">
       <div class="card-header">
-        <h3><i class="fas fa-tasks"></i> Resumo dos PDIs</h3>
+        <h3><i class="fas fa-clipboard-list"></i> Planos de ensino</h3>
         <button class="btn btn-sm btn-outline" onclick="navigateTo('pdi')">Ver todos</button>
       </div>
       <div class="form-grid">
-        <div style="text-align:center;padding:14px;background:var(--gray-50);border-radius:var(--radius);">
-          <div style="font-size:28px;font-weight:800;color:var(--info)">${nao_iniciados}</div>
-          <div style="font-size:12px;color:var(--gray-600);margin-top:4px;">Não iniciados</div>
-        </div>
-        <div style="text-align:center;padding:14px;background:rgba(255,193,7,.08);border-radius:var(--radius);">
-          <div style="font-size:28px;font-weight:800;color:var(--gold-dark)">${em_andamento}</div>
-          <div style="font-size:12px;color:var(--gray-600);margin-top:4px;">Em andamento</div>
-        </div>
-        <div style="text-align:center;padding:14px;background:rgba(40,167,69,.08);border-radius:var(--radius);">
-          <div style="font-size:28px;font-weight:800;color:var(--success)">${concluidos}</div>
-          <div style="font-size:12px;color:var(--gray-600);margin-top:4px;">Concluídos</div>
-        </div>
         <div style="text-align:center;padding:14px;background:rgba(26,35,126,.08);border-radius:var(--radius);">
-          <div style="font-size:28px;font-weight:800;color:var(--navy)">${pdis.length}</div>
-          <div style="font-size:12px;color:var(--gray-600);margin-top:4px;">Total PDIs</div>
+          <div style="font-size:28px;font-weight:800;color:var(--navy)">${n}</div>
+          <div style="font-size:12px;color:var(--gray-600);margin-top:4px;">Planos cadastrados</div>
         </div>
       </div>
     </div>`;

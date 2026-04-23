@@ -17,6 +17,7 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pizzip@3.1.4/dist/pizzip.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/file-saver@2.0.5/dist/FileSaver.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
@@ -556,6 +557,25 @@ tbody td { padding: 12px 16px; color: var(--gray-800); }
 .modal.modal-lg .modal-body {
   max-height: min(calc(90vh - 200px), 720px);
   overflow-y: auto;
+}
+.modal.modal-lg.modal-pdi-wizard { max-width: 960px; }
+.modal.modal-lg.modal-pdi-wizard .modal-body {
+  max-height: min(calc(100vh - 200px), 820px);
+  overflow-y: auto;
+}
+.pdi-wizard-steps {
+  display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 18px; font-size: 12px; color: var(--gray-600);
+}
+.pdi-wizard-steps span { padding: 6px 12px; border-radius: 999px; background: var(--gray-100); font-weight: 600; }
+.pdi-wizard-steps span.active { background: var(--navy); color: white; }
+.modal-pdi-wizard .pdi-b1-block-title {
+  font-size: 15px; font-weight: 800; color: var(--navy); margin: 0 0 16px 0; letter-spacing: 0.02em;
+}
+.modal-pdi-wizard .pdi-b1-n {
+  color: var(--navy); font-weight: 800; margin-right: 6px;
+}
+.modal-pdi-wizard .pdi-b1-hint {
+  font-size: 12px; color: var(--gray-600); margin: 6px 0 0 0; line-height: 1.45; font-style: italic;
 }
 .modal-header {
   padding: 24px 28px; border-bottom: 1px solid var(--gray-200);
@@ -1563,9 +1583,15 @@ function isSomenteLeitura() {
 function podeEditarDireto() {
   return isAdminUser();
 }
-/** Gestor: envia alterações para aprovação do administrador. */
+/**
+ * Tudo que não é administrador (e pode editar) passa pela fila de aprovação —
+ * matriz, ações educativas (incluir, editar, excluir), trilhas e planos.
+ * Hoje isso corresponde ao perfil Gestor; outros perfis com edição no futuro herdam a mesma regra.
+ */
 function usaFilaModeracao() {
-  return isGestorUser();
+  if (isSomenteLeitura()) return false;
+  if (isAdminUser()) return false;
+  return true;
 }
 
 function pushFilaModeracao(tipo, payload) {
@@ -1581,8 +1607,6 @@ function pushFilaModeracao(tipo, payload) {
   setStorage(STORAGE_KEYS.moderacao, q);
   if (typeof updateModeracaoNavBadge === 'function') updateModeracaoNavBadge();
 }
-
-const MODERACAO_HISTORICO_MAX = 400;
 
 function escapeHtmlStr(s) {
   if (s == null) return '';
@@ -1614,7 +1638,9 @@ function getModeracaoResumo(item) {
     if (item.tipo === 'matriz_upsert') {
       const r = p.registro || {};
       const nome = r.competencia || r.nome || r.codigo || '—';
-      return p.editId ? `Alterar competência: ${nome}` : `Nova competência: ${nome}`;
+      const ctx = [r.cargo, r.eixo].filter(Boolean).slice(0, 2).join(' · ');
+      const suffix = ctx ? ` (${ctx})` : '';
+      return p.editId ? `Alterar competência: ${nome}${suffix}` : `Nova competência: ${nome}${suffix}`;
     }
     if (item.tipo === 'matriz_arquivar') {
       try {
@@ -1628,22 +1654,105 @@ function getModeracaoResumo(item) {
     }
     if (item.tipo === 'acao_upsert') {
       const r = p.registro || {};
-      const nome = r.titulo || r.codigo || '—';
-      return p.editId ? `Alterar ação: ${nome}` : `Nova ação: ${nome}`;
+      const nome = (r.nome || r.titulo || '').trim() || r.codigo || '—';
+      const cod = r.codigo && String(r.codigo).trim() && nome !== r.codigo ? ` [${r.codigo}]` : '';
+      const mod = r.modalidade ? ` · ${r.modalidade}` : '';
+      const st = r.status ? ` · ${r.status}` : '';
+      const base = p.editId ? 'Alterar ação: ' : 'Nova ação: ';
+      let campos = '';
+      if (p.editId) {
+        try {
+          const data = getStorage(STORAGE_KEYS.acoes) || [];
+          const prev = data.find(x => idEquals(x.id, p.editId));
+          if (prev) {
+            const keys = [
+              ['nome', 'nome'],
+              ['codigo', 'código'],
+              ['modalidade', 'modalidade'],
+              ['status', 'status'],
+              ['carga_horaria', 'carga horária'],
+              ['publico_alvo', 'público-alvo'],
+              ['objetivo_geral', 'objetivo geral'],
+              ['ementa', 'ementa'],
+              ['metodologia', 'metodologia'],
+              ['competencias_vinculadas', 'competências (matriz)'],
+            ];
+            const changed = keys
+              .filter(([k]) => JSON.stringify(prev[k] ?? null) !== JSON.stringify(r[k] ?? null))
+              .map(([, lab]) => lab);
+            if (changed.length) campos = ` · Alterações: ${changed.join(', ')}`;
+          }
+        } catch (_) { /* ignore */ }
+      }
+      return `${base}${nome}${cod}${mod}${st}${campos}`;
     }
-    if (item.tipo === 'acao_excluir') return `Excluir ação (id: ${p.id || '—'})`;
+    if (item.tipo === 'acao_excluir') {
+      try {
+        const nomeSnap = (p.nome_acao || '').trim();
+        const codSnap = (p.codigo_acao || '').trim();
+        const data = getStorage(STORAGE_KEYS.acoes) || [];
+        const row = data.find(x => idEquals(x.id, p.id));
+        const nome = nomeSnap || (row && ((row.nome || '').trim() || (row.codigo || '').trim())) || '';
+        const cod = codSnap || (row && (row.codigo || '').trim()) || '';
+        const mod = row && row.modalidade ? ` · ${row.modalidade}` : '';
+        if (nome) {
+          const codPart = cod && nome !== cod ? ` [${cod}]` : '';
+          return `Excluir ação: ${nome}${codPart}${mod}`;
+        }
+      } catch (_) { /* ignore */ }
+      return `Excluir ação (id: ${p.id || '—'})`;
+    }
     if (item.tipo === 'trilha_upsert') {
       const r = p.registro || {};
-      const nome = r.titulo || '—';
-      return p.editId ? `Alterar trilha: ${nome}` : `Nova trilha: ${nome}`;
+      const nome = (r.nome || r.titulo || '').trim() || '—';
+      const bits = [r.cargo_alvo, r.nivel, r.eixo_funcional].filter(Boolean);
+      const nAcoes = (r.acoes_vinculadas || []).length;
+      const extra = [...bits.slice(0, 2), nAcoes ? `${nAcoes} ação(ões)` : ''].filter(Boolean).join(' · ');
+      return p.editId ? `Alterar trilha: ${nome}${extra ? ` (${extra})` : ''}` : `Nova trilha: ${nome}${extra ? ` (${extra})` : ''}`;
     }
-    if (item.tipo === 'trilha_excluir') return `Excluir trilha (id: ${p.id || '—'})`;
+    if (item.tipo === 'trilha_excluir') {
+      try {
+        const data = getStorage(STORAGE_KEYS.trilhas) || [];
+        const row = data.find(x => idEquals(x.id, p.id));
+        const nome = row && (row.nome || row.titulo);
+        if (nome) return `Excluir trilha: ${nome}`;
+      } catch (_) { /* ignore */ }
+      return `Excluir trilha (id: ${p.id || '—'})`;
+    }
     if (item.tipo === 'pdi_upsert') {
       const r = p.registro || {};
-      const nome = r.titulo || '—';
-      return p.editId ? `Alterar plano: ${nome}` : `Novo plano: ${nome}`;
+      const users = getStorage(STORAGE_KEYS.users) || [];
+      const acoes = getStorage(STORAGE_KEYS.acoes) || [];
+      const trilhas = getStorage(STORAGE_KEYS.trilhas) || [];
+      const u = users.find(x => idEquals(x.id, r.usuario_id));
+      const a = acoes.find(x => idEquals(x.id, r.acao_id));
+      const un = u ? (u.nome || '—') : 'Servidor (não encontrado)';
+      const b1t = r.plano_bloco1 && r.plano_bloco1.titulo_acao ? String(r.plano_bloco1.titulo_acao).slice(0, 80) : '';
+      const b2c = r.plano_bloco2 && r.plano_bloco2.categoria_competencia_mcn ? String(r.plano_bloco2.categoria_competencia_mcn) : '';
+      const an = a ? ((a.nome || '—') + (a.codigo ? ` [${a.codigo}]` : '')) : (r.trilha_id ? 'Plano legado (trilha)' : 'Sem ação');
+      const tit = b1t ? ` · ${b1t}${b1t.length >= 80 ? '…' : ''}` : '';
+      const mcn = b2c ? ` · MCN: ${b2c}` : '';
+      const b3m = r.plano_bloco3 && r.plano_bloco3.metodologias_estrategias ? String(r.plano_bloco3.metodologias_estrategias).replace(/\s+/g, ' ').trim().slice(0, 40) : '';
+      const des = b3m ? ` · Design: ${b3m}${b3m.length >= 40 ? '…' : ''}` : '';
+      return p.editId ? `Alterar plano: ${un} → ${an}${tit}${mcn}${des}` : `Novo plano: ${un} → ${an}${tit}${mcn}${des}`;
     }
-    if (item.tipo === 'pdi_excluir') return `Excluir plano (id: ${p.id || '—'})`;
+    if (item.tipo === 'pdi_excluir') {
+      try {
+        const data = getStorage(STORAGE_KEYS.pdi) || [];
+        const users = getStorage(STORAGE_KEYS.users) || [];
+        const acoes = getStorage(STORAGE_KEYS.acoes) || [];
+        const trilhas = getStorage(STORAGE_KEYS.trilhas) || [];
+        const row = data.find(x => idEquals(x.id, p.id));
+        if (row) {
+          const u = users.find(x => idEquals(x.id, row.usuario_id));
+          const a = acoes.find(x => idEquals(x.id, row.acao_id));
+          if (a) return `Excluir plano: ${u ? u.nome : '—'} → ${(a.nome || '—')}${a.codigo ? ` [${a.codigo}]` : ''}`;
+          const t = trilhas.find(x => idEquals(x.id, row.trilha_id));
+          return `Excluir plano: ${u ? u.nome : '—'} → ${t ? t.nome : '—'}`;
+        }
+      } catch (_) { /* ignore */ }
+      return `Excluir plano (id: ${p.id || '—'})`;
+    }
   } catch (_) { /* ignore */ }
   return '—';
 }
@@ -1651,7 +1760,6 @@ function getModeracaoResumo(item) {
 function appendModeracaoHistorico(entry) {
   const arr = getStorage(STORAGE_KEYS.moderacao_historico) || [];
   arr.push({ ...entry, id: genId() });
-  while (arr.length > MODERACAO_HISTORICO_MAX) arr.shift();
   setStorage(STORAGE_KEYS.moderacao_historico, arr);
 }
 
@@ -1659,14 +1767,15 @@ function updateModeracaoNavBadge() {
   const badge = document.getElementById('nav-moderacao-count');
   const nav = document.getElementById('nav-moderacao');
   if (!badge || !nav || !currentUser || currentUser.acesso !== 'Administrador') return;
+  invalidateStorageCacheKey(STORAGE_KEYS.moderacao);
   const n = (getStorage(STORAGE_KEYS.moderacao) || []).length;
   badge.textContent = String(n);
   badge.style.display = n > 0 ? 'inline-block' : 'none';
 }
 
-/** Invalida cache local para forçar leitura fresca da API antes de aplicar moderação. */
+/** Invalida cache local para forçar leitura fresca da API na próxima leitura. */
 function invalidateStorageCacheKey(key) {
-  if (typeof remoteCache !== 'undefined' && remoteCache[key] != null) remoteCache[key] = null;
+  if (typeof remoteCache !== 'undefined') delete remoteCache[key];
 }
 
 function normalizeModeracaoPayload(raw) {
@@ -1799,6 +1908,7 @@ window.aprovarModeracaoItem = function(mid) {
     showToast('Apenas administradores podem aprovar solicitações.', 'error');
     return;
   }
+  invalidateStorageCacheKey(STORAGE_KEYS.moderacao);
   const q = getStorage(STORAGE_KEYS.moderacao) || [];
   const item = q.find(x => idEquals(x.id, mid));
   if (!item) return;
@@ -1821,7 +1931,8 @@ window.aprovarModeracaoItem = function(mid) {
     motivo_rejeicao: null,
   });
   setStorage(STORAGE_KEYS.moderacao, q.filter(x => !idEquals(x.id, mid)));
-  if (typeof remoteCache !== 'undefined') remoteCache[STORAGE_KEYS.moderacao] = null;
+  invalidateStorageCacheKey(STORAGE_KEYS.moderacao);
+  invalidateStorageCacheKey(STORAGE_KEYS.moderacao_historico);
   showToast('Solicitação aplicada nos dados do sistema.', 'success');
   updateModeracaoNavBadge();
   if (currentPage === 'moderacao' && typeof renderModeracao === 'function') renderModeracao();
@@ -1835,6 +1946,7 @@ window.rejeitarModeracaoItem = function(mid) {
   }
   if (!confirm('Recusar esta solicitação? A alteração não será aplicada.')) return;
   const motivo = (typeof window.prompt === 'function' ? window.prompt('Motivo da recusa (opcional):', '') : '') || '';
+  invalidateStorageCacheKey(STORAGE_KEYS.moderacao);
   const q = getStorage(STORAGE_KEYS.moderacao) || [];
   const item = q.find(x => idEquals(x.id, mid));
   if (!item) return;
@@ -1852,7 +1964,8 @@ window.rejeitarModeracaoItem = function(mid) {
     motivo_rejeicao: motivo.trim() || null,
   });
   setStorage(STORAGE_KEYS.moderacao, q.filter(x => !idEquals(x.id, mid)));
-  if (typeof remoteCache !== 'undefined') remoteCache[STORAGE_KEYS.moderacao] = null;
+  invalidateStorageCacheKey(STORAGE_KEYS.moderacao);
+  invalidateStorageCacheKey(STORAGE_KEYS.moderacao_historico);
   showToast('Solicitação recusada.', 'info');
   updateModeracaoNavBadge();
   if (currentPage === 'moderacao' && typeof renderModeracao === 'function') renderModeracao();
@@ -1860,6 +1973,7 @@ window.rejeitarModeracaoItem = function(mid) {
 };
 
 window.verDetalheModeracaoPendente = function(mid) {
+  invalidateStorageCacheKey(STORAGE_KEYS.moderacao);
   const q = getStorage(STORAGE_KEYS.moderacao) || [];
   const it = q.find(x => idEquals(x.id, mid));
   if (!it) {
@@ -1871,6 +1985,7 @@ window.verDetalheModeracaoPendente = function(mid) {
 };
 
 window.verDetalheModeracaoHistorico = function(hid) {
+  invalidateStorageCacheKey(STORAGE_KEYS.moderacao_historico);
   const arr = getStorage(STORAGE_KEYS.moderacao_historico) || [];
   const it = arr.find(x => x.id === hid);
   if (!it) {
@@ -2207,11 +2322,12 @@ function showToast(message, type = 'info') {
 // ================================================================
 // MODAL
 // ================================================================
-function openModal(title, bodyHtml, footerHtml = '', large = false) {
+function openModal(title, bodyHtml, footerHtml = '', large = false, extraModalClass = '') {
   document.getElementById('modal-title').textContent = title;
   document.getElementById('modal-body').innerHTML = bodyHtml;
   document.getElementById('modal-footer').innerHTML = footerHtml;
-  document.getElementById('main-modal').className = large ? 'modal modal-lg' : 'modal';
+  const base = large ? 'modal modal-lg' : 'modal';
+  document.getElementById('main-modal').className = extraModalClass ? `${base} ${extraModalClass}`.trim() : base;
   document.getElementById('modal-overlay').classList.add('active');
 }
 
@@ -2611,51 +2727,11 @@ function buildTrilhaImportRecord(row, acoes) {
   };
 }
 
-function buildPlanoEnsinoImportRecord(row, users, trilhas) {
-  const userIdRaw = getRowValue(row, ['usuario_id']);
-  const userCpf = getRowValue(row, ['usuario_cpf', 'cpf']);
-  const userEmail = getRowValue(row, ['usuario_email', 'email']);
-  const userNome = getRowValue(row, ['usuario_nome', 'nome']);
-  const trilhaIdRaw = getRowValue(row, ['trilha_id']);
-  const trilhaNome = getRowValue(row, ['trilha_nome', 'trilha']);
-
-  const user = users.find(u =>
-    (userIdRaw && u.id === userIdRaw) ||
-    (userCpf && u.cpf === userCpf) ||
-    (userEmail && (u.email || '').toLowerCase() === userEmail.toLowerCase()) ||
-    (userNome && (u.nome || '').toLowerCase() === userNome.toLowerCase())
-  );
-  const trilha = trilhas.find(t =>
-    (trilhaIdRaw && t.id === trilhaIdRaw) ||
-    (trilhaNome && (t.nome || '').toLowerCase() === trilhaNome.toLowerCase())
-  );
-
-  if (!user) return null;
-  const progresso = parseInt(getRowValue(row, ['progresso']), 10) || 0;
-  const acoesStatus = {};
-  (trilha?.acoes_vinculadas || []).forEach((aid) => { acoesStatus[aid] = false; });
-
-  return {
-    id: getRowValue(row, ['id']) || genId(),
-    usuario_id: user.id,
-    trilha_id: trilha ? trilha.id : '',
-    data_inicio: getRowValue(row, ['data_inicio']),
-    data_meta: getRowValue(row, ['data_meta']),
-    status: getRowValue(row, ['status']) || (progresso > 0 ? 'Em andamento' : 'Não iniciado'),
-    progresso,
-    acoes_status: acoesStatus,
-    data_criacao: getRowValue(row, ['data_criacao']) || new Date().toISOString(),
-    ativo: getRowValue(row, ['ativo']) ? parseBool(getRowValue(row, ['ativo'])) : true,
-  };
-}
-
 function transformExcelRows(moduleKey, rows, firstDataExcelRow) {
   const valid = [];
   const invalid = [];
   const lineBase = firstDataExcelRow != null && firstDataExcelRow > 0 ? firstDataExcelRow : 2;
   const acoes = getStorage(STORAGE_KEYS.acoes) || [];
-  const users = getStorage(STORAGE_KEYS.users) || [];
-  const trilhas = getStorage(STORAGE_KEYS.trilhas) || [];
   const codigosAcoesNaPlanilha = new Set();
 
   rows.forEach((row, idx) => {
@@ -2713,9 +2789,6 @@ function transformExcelRows(moduleKey, rows, firstDataExcelRow) {
       } else if (moduleKey === STORAGE_KEYS.trilhas) {
         rec = buildTrilhaImportRecord(row, acoes);
         if (!rec.nome) throw new Error('Nome da trilha é obrigatório');
-      } else if (moduleKey === STORAGE_KEYS.pdi) {
-        rec = buildPlanoEnsinoImportRecord(row, users, trilhas);
-        if (!rec) throw new Error('Usuário não encontrado para o plano');
       }
 
       if (!rec) throw new Error('Registro não mapeado');
@@ -2830,7 +2903,6 @@ function importExcelData(moduleKey) {
       if (moduleKey === STORAGE_KEYS.matriz && document.getElementById('matriz-table-content')) renderMatrizTable();
       if (moduleKey === STORAGE_KEYS.acoes && document.getElementById('acoes-grid')) renderAcoesGrid();
       if (moduleKey === STORAGE_KEYS.trilhas && typeof renderTrilhas === 'function') renderTrilhas();
-      if (moduleKey === STORAGE_KEYS.pdi && typeof renderPDI === 'function') renderPDI();
     } catch (err) {
       showToast(`Falha na importação: ${err.message}`, 'error');
     }
@@ -2848,7 +2920,6 @@ function renderDashboard() {
   const acoes = getStorage(STORAGE_KEYS.acoes) || [];
   const trilhas = getStorage(STORAGE_KEYS.trilhas) || [];
   const users = getStorage(STORAGE_KEYS.users) || [];
-  const pdis = getStorage(STORAGE_KEYS.pdi) || [];
   const dashSel = getDashboardSelection();
   const selIdSet = new Set((dashSel.ids || []).map(String));
   const filteredAcoes = dashSel.mode === 'none'
@@ -3083,6 +3154,8 @@ function renderDashboard() {
 // ================================================================
 let matrizPage = 1;
 const matrizPerPage = 15;
+let moderacaoHistoricoPage = 1;
+const moderacaoHistoricoPerPage = 15;
 let matrizFilters = { search: '', categoria: '', cargo: '', eixo: '', unidade: '', complexidade: '', matriz: '', subcategoria: '', mostrarArquivados: false };
 let matrizSort = { field: '', dir: 'asc' };
 
@@ -4181,7 +4254,13 @@ function saveAcao() {
 function deleteAcao(id) {
   if (!confirm('Deseja excluir esta ação educativa?')) return;
   if (usaFilaModeracao()) {
-    pushFilaModeracao('acao_excluir', { id });
+    const data = getStorage(STORAGE_KEYS.acoes) || [];
+    const row = data.find(x => idEquals(x.id, id));
+    pushFilaModeracao('acao_excluir', {
+      id,
+      nome_acao: row ? (row.nome || '').trim() : '',
+      codigo_acao: row ? (row.codigo || '').trim() : '',
+    });
     showToast('Solicitação de exclusão enviada ao administrador.', 'info');
     renderAcoesGrid();
     return;
@@ -4389,17 +4468,475 @@ function deleteTrilha(id) {
 // ================================================================
 // PLANO DE ENSINO
 // ================================================================
+/** Plano antigo só com trilha (sem acao_id): ainda exibido até ser regravado. */
+function pdiUsaTrilhaLegado(p) {
+  return !!(p && p.trilha_id && !p.acao_id);
+}
+
+const PDI_B1_PUBLICO_OPTS = [
+  'Policial Penal (Estadual / Federal)',
+  'Especialista Federal em Assistência à Execução Penal',
+  'Técnico Federal de Apoio à Execução Penal',
+  'Outros',
+];
+const PDI_B1_TIPO_OPTS = [
+  'Curso',
+  'Treinamento em Serviço',
+  'Oficina',
+  'Workshop',
+  'Evento',
+  'Palestra',
+  'Outra',
+];
+const PDI_B1_MODALIDADE_OPTS = ['Presencial', 'Híbrida', 'A Distância', 'Autoinstrucional'];
+
+const PDI_B2_CATEGORIA_OPTS = ['Geral', 'Especialista'];
+const PDI_B2_SUBCATEGORIA_OPTS = [
+  'Técnica/ Tecnológica',
+  'Sociojurídica e Direitos Fundamentais',
+  'Socioemocional/ Comportamental',
+];
+const PDI_B2_EIXO_OPTS = [
+  'Policiamento Penal',
+  'Operação e Controle de Unidades Prisionais',
+  'Gestão dos Serviços Penais',
+  'Governança do Sistema Penal',
+  'Neoaprendizagem e Neoprofessor dos Serviços Penais',
+];
+const PDI_B2_UNIDADE_TEMATICA_OPTS = [
+  'Ações Educativas para as PPL',
+  'Alternativas Penais',
+  'Aprendizagem Expansiva e Adaptativa',
+  'Compras e Suprimentos',
+  'Comunicação, Colaboração e Gestão de Conflitos',
+  'Documentação e Normas Técnicas',
+  'Escolta de Pessoas Privadas de Liberdade',
+  'Funcionamento das Unidades Prisionais',
+  'Gerenciamento Prisional',
+  'Gestão de dados, informações e conhecimentos',
+  'Gestão de Pessoas',
+  'Gestão de Processos',
+  'Gestão de Projetos',
+  'Gestão e Planejamento de Ensino e Aprendizagem',
+  'Governança Multinível',
+  'Inteligência, Contrainteligência e Segurança da Informação',
+  'Neoaprendizagem',
+  'Ouvidoria e Corregedoria',
+  'Política Penal',
+  'Práticas Socioemocionais e Comportamentais',
+  'Recaptura de Pessoas Privadas de Liberdade',
+  'Saúde e Prevenção',
+  'Segurança orgânica',
+];
+const PDI_B2_CONHECIMENTOS_OPTS_A = ["Acesso ao Lazer e Cultura","Ações de Contrainteligência","Alinhamento Institucional e Gestão por Competências","Análise de dados estatísticos","Análise de Riscos e oportunidades","Análise de Viabilidade Econômica de Projetos","Análise de Viabilidade Técnica de Projetos","Análise Situacional e Policiamento Penal Preventivo","Aprendizagem Colaborativa","Arquivamento de documentos","Articulação com Órgãos e Entidades","Atendimento ao Público Interno e/ou Externo","Atendimento Especializado","Atividade correcional","Atuação em Eventos Críticos","Avaliação de Compras e Contratações","Avaliação de Desempenho no Trabalho","Avaliação de Reabilitação","Avaliação e Revisão de Processos","Avaliação Multinível e Bidirecional","Busca Pessoal em Pessoas Privadas de Liberdade","Busca Pessoal em Visitantes","Cadastro em banco de dados","Classificação de PPL","Coleta de Material Genético","Coleta e Análise de Dados para Conhecimento Estratégico","Complexidade do Sistema Penal","Compliance, LGPD e Governança Ética dos Dados","Comunicação Digital Estratégica","Comunicação Institucional e Governança da Informação","Condução de Cães Policiais","Condução tática","Coordenação em Rede","Cumprimento dos fluxos e procedimentos","Custódia","Dados de Inteligência e Contrainteligência","Delegação de Tarefas","Demandas Jurídicas e suas priorizações","Diretrizes do Sistema Penal","Disciplina e segurança das penitenciárias","Distribuição de Pessoal","Domínio da Neoaprendizagem e Maturidade Docente","Educação financeira","Elaboração de normas","Elaboração de Plano de Ensino","Elaboração de Processo de Compra","Elaboração de Programas e Projetos","Escolta de Pessoas Privadas de Liberdade","Estrutura física e tecnológica das unidades prisionais","Ética Correcional e Compliance Público","Ética Profissional","Exame de certificação","Execução de ações educativas","Execução de alternativas penais","Execução de Normas, Rotinas e Procedimentos do Sistema Prisional","Execução do monitoramento eletrônico","Financiamento das Políticas Penais","Fiscalização de Contratos","Fiscalização de Tráfego","Flexibilidade","Força Cooperação Penitenciária","Fundamentos da Inteligência Penitenciária","Fundamentos de Cibersegurança para a Função Pública","Gestão Acadêmica","Gestão de Mudanças","Gestão do Conhecimento Organizacional","Gestão do Tempo","Gestão Pública Sustentável","Governança Algorítmica e Ética Digital","Governança da Aprendizagem Organizacional","Governança do Conhecimento no Sistema Penal","Governança do Desempenho Multinível","Identificação e Compartilhamento de Conhecimento e Informação","Identificação e Organização de dados, informações e conhecimentos"];
+const PDI_B2_CONHECIMENTOS_OPTS_B = ["Infraestrutura física","Inovação, Adhocracia e Resolução de Crises","Inspeção de Serviços e produtos adquiridos","Instrumentos de Parcerias","Inteligência Emocional","Justiça Racial, Inclusão e Diversidade","Levantamento de Necessidade de Recursos","Libras","Liderança e Visão Sistêmica","Liderança Pública","Linguagem Verbal e não verbal","Manuseio de Armamento","Mediação de Conflitos","Metodologias Ativas, Ágeis e Andragogia","Monitoramento e Atualização de dados, informações e conhecimentos","Monitorar e Avaliar Programas e Projetos","Movimentação de Pessoas Privadas de Liberdade","Movimentação dos Materiais de Entrega","Negociação","Netweaving","Normas jurídicas e as estruturas institucionais da Política Penal","Normas Técnicas","Operação de drones","Operações de Recaptura de Pessoas Privadas de Liberdade","Pensamento Analítico","Pensamento Computacional","Pensamento Criativo","Pensamento Lógico","Pensamento Matemático","Pensamento Resolutivo","Pensamento Sintético","Pensamento Sistêmico","Pesquisa","Planejamento de Ações Educativas","Planejamento de Atividades de Inteligência","Planejamento de Compras","Planejamento de Escolta de Pessoas Privadas de Liberdade","Planejamento de Processos","Planejamento de Recaptura de Pessoas Privadas de Liberdade","Planejamento Estratégico do Sistema Penal","Política Penal","Prevenção e Enfrentamento ao Assédio","Primeiros Socorros","Proatividade","Procedimentos de Segurança das unidades prisionais","Processos Colaborativos","Reconhecimento de Responsabilidades","Reconhecimento e motivação","Redação Oficial","Registro de Transgressões Disciplinares e de Crimes","Reintegração Social","Relacionamento Interpessoal","Relatórios","Representação institucional","Reputação Digital e Responsabilidade Social nas Redes","Resiliência","Revista em Infraestrutura Prisional","Saúde e Segurança no trabalho","Segurança cidadã","Segurança de Visitantes","Segurança orgânica","Segurança Psicológica no Trabalho","Soluções Transdisciplinares e Intraempreendedorismo","Supervisão de Atividades","Tecnologias de Monitoramento","Tecnologias Digitais e Inteligência Artificial","Tiro de precisão","Trabalho em Equipe","Tramitar Documentos","Triagem","Uso de Equipamentos e Tecnologias de Segurança","Variações de alternativas Penais","Variações Históricas do Sistema Penal"];
+const PDI_B2_CONHECIMENTOS_OPTS = PDI_B2_CONHECIMENTOS_OPTS_A.concat(PDI_B2_CONHECIMENTOS_OPTS_B);
+
+function pdiListVisibleForCurrentUser(pdis) {
+  if (!currentUser) return [];
+  if (isAdminUser()) return pdis;
+  return (pdis || []).filter(p => idEquals(p.usuario_id, currentUser.id));
+}
+
+function pdiMapModalidadeAcaoParaBloco1(mod) {
+  const m = String(mod || '').trim();
+  if (m === 'Presencial') return 'Presencial';
+  if (m === 'EaD') return 'A Distância';
+  if (m === 'Híbrido') return 'Híbrida';
+  if (m === 'Semipresencial') return 'Híbrida';
+  return '';
+}
+
+function pdiMapTipoAcaoParaBloco1(tipo) {
+  const x = String(tipo || '').trim();
+  if (PDI_B1_TIPO_OPTS.includes(x) && x !== 'Outra') return { tipo: x, outra: '' };
+  if (x === 'Seminário') return { tipo: 'Evento', outra: '' };
+  if (['Módulo', 'Disciplina'].includes(x)) return { tipo: 'Outra', outra: x };
+  if (x) return { tipo: 'Outra', outra: x };
+  return { tipo: '', outra: '' };
+}
+
+/** Valida YYYY-MM-DD (input type=date); retorna timestamp UTC do dia ou null. */
+function pdiParseDateOnly(s) {
+  const t = String(s || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(t)) return null;
+  const [y, mo, d] = t.split('-').map(Number);
+  if (!y || mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return null;
+  return dt.getTime();
+}
+
+window.pdiOnPeriodoDateChange = function(which) {
+  const ini = document.getElementById('pb1-periodo-inicio');
+  const fim = document.getElementById('pb1-periodo-fim');
+  if (!ini || !fim) return;
+  if (ini.value && fim.value && ini.value > fim.value) {
+    if (which === 'inicio') fim.value = ini.value;
+    else ini.value = fim.value;
+  }
+  if (ini.value) fim.setAttribute('min', ini.value);
+  else fim.removeAttribute('min');
+  if (fim.value) ini.setAttribute('max', fim.value);
+  else ini.removeAttribute('max');
+};
+
+function pdiMatchPublicoAlvoBloco1(publicoAlvoText) {
+  const pa = String(publicoAlvoText || '').toLowerCase();
+  if (pa.includes('policial penal')) return { v: 'Policial Penal (Estadual / Federal)', outros: '' };
+  if (pa.includes('especialista federal')) return { v: 'Especialista Federal em Assistência à Execução Penal', outros: '' };
+  if (pa.includes('técnico federal') || pa.includes('tecnico federal')) return { v: 'Técnico Federal de Apoio à Execução Penal', outros: '' };
+  if (pa.trim()) return { v: 'Outros', outros: String(publicoAlvoText || '').trim() };
+  return { v: '', outros: '' };
+}
+
+function pdiPrefillBloco1FromAcao(a) {
+  if (!a) {
+    return {
+      titulo_acao: '', publico_alvo: '', publico_alvo_outros: '', observacoes: '', objetivo_geral: '',
+      tipo_acao: '', tipo_acao_outra: '', modalidade: '', carga_horaria_total: '', periodo_inicio: '', periodo_fim: '', unidade_promotora: '',
+      coordenadores_instrutores: '',
+    };
+  }
+  const pub = pdiMatchPublicoAlvoBloco1(a.publico_alvo);
+  const tipoM = pdiMapTipoAcaoParaBloco1(a.tipo);
+  const parts = [a.ementa, a.justificativa_oferta].filter(Boolean);
+  const esc = [a.escola_proponente, a.area_demandante].filter(Boolean).join(' — ');
+  return {
+    titulo_acao: String(a.nome || '').trim(),
+    publico_alvo: pub.v,
+    publico_alvo_outros: pub.outros,
+    observacoes: parts.join('\n\n').trim(),
+    objetivo_geral: String(a.objetivo_geral || '').trim(),
+    tipo_acao: tipoM.tipo,
+    tipo_acao_outra: tipoM.outra,
+    modalidade: pdiMapModalidadeAcaoParaBloco1(a.modalidade),
+    carga_horaria_total: a.carga_horaria != null && a.carga_horaria !== '' ? String(Number(a.carga_horaria)) : '',
+    periodo_inicio: '',
+    periodo_fim: '',
+    unidade_promotora: esc || 'ESPEN',
+    coordenadores_instrutores: String(a.recursos_humanos || '').trim(),
+  };
+}
+
+function pdiMergeBloco1(stored, acao) {
+  const base = pdiPrefillBloco1FromAcao(acao);
+  const s = stored && typeof stored === 'object' ? stored : {};
+  return { ...base, ...s };
+}
+
+function pdiOptionsHtml(opts, selected) {
+  return opts.map(o => `<option value="${escapeHtmlStr(o)}" ${o === selected ? 'selected' : ''}>${escapeHtmlStr(o)}</option>`).join('');
+}
+
+function pdiBuildBloco1FormHtml(b1) {
+  const b = b1 || {};
+  const showPubOut = b.publico_alvo === 'Outros';
+  const showTipoOut = b.tipo_acao === 'Outra';
+  return `
+    <input type="hidden" id="pdi-w-acao-id" value="">
+    <input type="hidden" id="pdi-w-edit-id" value="">
+    <div class="form-section" style="margin-top:0;">
+      <div class="pdi-b1-block-title">BLOCO 1 - Identificação da Ação Educativa</div>
+      <p class="text-muted" style="font-size:12px;margin:-8px 0 18px;line-height:1.45;">Campos podem vir pré-preenchidos a partir da ação educativa selecionada; ajuste conforme o plano de execução.</p>
+      <div class="form-grid">
+        <div class="form-group form-full">
+          <label><span class="pdi-b1-n">1.</span> Título da Ação Educativa: *</label>
+          <input type="text" id="pb1-titulo" value="${escapeHtmlStr(b.titulo_acao || '')}" placeholder="Título da ação educativa">
+        </div>
+        <div class="form-group form-full">
+          <label><span class="pdi-b1-n">2.</span> Público Alvo <span style="font-weight:500;color:var(--gray-600);"></span> *</label>
+          <select id="pb1-publico-alvo" onchange="document.getElementById('pb1-wrap-publico-outros').style.display=this.value==='Outros'?'block':'none'">
+            <option value="">Selecione…</option>
+            ${pdiOptionsHtml(PDI_B1_PUBLICO_OPTS, b.publico_alvo || '')}
+          </select>
+          <div id="pb1-wrap-publico-outros" style="display:${showPubOut ? 'block' : 'none'};margin-top:10px;">
+            <label style="font-size:12px;">Outros — especificar</label>
+            <input type="text" id="pb1-publico-outros" value="${escapeHtmlStr(b.publico_alvo_outros || '')}" placeholder="Descreva quando marcar &quot;Outros&quot;">
+          </div>
+        </div>
+        <div class="form-group form-full">
+          <label>Observações/descrição:</label>
+          <textarea id="pb1-observacoes" rows="3" placeholder="Observações ou descrição complementar">${escapeHtmlStr(b.observacoes || '')}</textarea>
+        </div>
+        <div class="form-group form-full">
+          <label><span class="pdi-b1-n">3.</span> Objetivo Geral da Ação Educativa *</label>
+          <p class="pdi-b1-hint">(Declare o propósito central da ação, com foco no desenvolvimento de competências e impacto institucional.)</p>
+          <textarea id="pb1-objetivo-geral" rows="4" placeholder="Objetivo geral da ação educativa">${escapeHtmlStr(b.objetivo_geral || '')}</textarea>
+        </div>
+        <div class="form-group form-full">
+          <label><span class="pdi-b1-n">4.</span> Tipo da Ação Educativa <span style="font-weight:500;color:var(--gray-600);"></span> *</label>
+          <select id="pb1-tipo-acao" onchange="document.getElementById('pb1-wrap-tipo-outra').style.display=this.value==='Outra'?'block':'none'">
+            <option value="">Selecione…</option>
+            ${pdiOptionsHtml(PDI_B1_TIPO_OPTS, b.tipo_acao || '')}
+          </select>
+          <div id="pb1-wrap-tipo-outra" style="display:${showTipoOut ? 'block' : 'none'};margin-top:10px;">
+            <label style="font-size:12px;">Outra — especificar</label>
+            <input type="text" id="pb1-tipo-outra" value="${escapeHtmlStr(b.tipo_acao_outra || '')}" placeholder="Descreva quando marcar &quot;Outra&quot;">
+          </div>
+        </div>
+        <div class="form-group form-full">
+          <label><span class="pdi-b1-n">5.</span> Modalidade da Ação Educativa <span style="font-weight:500;color:var(--gray-600);"></span> *</label>
+          <select id="pb1-modalidade">
+            <option value="">Selecione…</option>
+            ${pdiOptionsHtml(PDI_B1_MODALIDADE_OPTS, b.modalidade || '')}
+          </select>
+        </div>
+        <div class="form-group form-full">
+          <label><span class="pdi-b1-n">6.</span> Carga Horária Total (hs) da Ação Educativa: *</label>
+          <input type="number" id="pb1-ch-total" min="0" step="1" value="${escapeHtmlStr(b.carga_horaria_total != null ? String(b.carga_horaria_total) : '')}" placeholder="0">
+        </div>
+        <div class="form-group form-full">
+          <label><span class="pdi-b1-n">7.</span> Período de Realização da Ação Educativa *</label>
+          <p class="pdi-b1-hint" style="margin-top:4px;">A data de início não pode ser posterior à data de fim.</p>
+          <div class="form-grid" style="margin-top:8px;">
+            <div class="form-group">
+              <label style="font-size:12px;font-weight:600;">Início <span style="color:var(--gray-500);font-weight:500;">(dia/mês/ano)</span> *</label>
+              <input type="date" id="pb1-periodo-inicio" value="${escapeHtmlStr(b.periodo_inicio || '')}" onchange="pdiOnPeriodoDateChange('inicio')">
+            </div>
+            <div class="form-group">
+              <label style="font-size:12px;font-weight:600;">Fim <span style="color:var(--gray-500);font-weight:500;">(dia/mês/ano)</span> *</label>
+              <input type="date" id="pb1-periodo-fim" value="${escapeHtmlStr(b.periodo_fim || '')}" onchange="pdiOnPeriodoDateChange('fim')">
+            </div>
+          </div>
+        </div>
+        <div class="form-group form-full">
+          <label><span class="pdi-b1-n">8.</span> Unidade Promotora / Escola do Sistema Penal:</label>
+          <input type="text" id="pb1-unidade-promotora" value="${escapeHtmlStr(b.unidade_promotora || '')}" placeholder="Unidade promotora ou escola do sistema penal">
+        </div>
+        <div class="form-group form-full">
+          <label><span class="pdi-b1-n">9.</span> Coordenadores(as) / Instrutores(as) responsáveis pela Ação Educativa:</label>
+          <textarea id="pb1-coordenadores" rows="3" placeholder="Nomes e papéis (coordenação, instrução, etc.)">${escapeHtmlStr(b.coordenadores_instrutores || '')}</textarea>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function pdiCollectBloco1FromForm() {
+  const get = (id) => {
+    const el = document.getElementById(id);
+    return el ? String(el.value || '').trim() : '';
+  };
+  return {
+    titulo_acao: get('pb1-titulo'),
+    publico_alvo: get('pb1-publico-alvo'),
+    publico_alvo_outros: get('pb1-publico-outros'),
+    observacoes: get('pb1-observacoes'),
+    objetivo_geral: get('pb1-objetivo-geral'),
+    tipo_acao: get('pb1-tipo-acao'),
+    tipo_acao_outra: get('pb1-tipo-outra'),
+    modalidade: get('pb1-modalidade'),
+    carga_horaria_total: get('pb1-ch-total'),
+    periodo_inicio: get('pb1-periodo-inicio'),
+    periodo_fim: get('pb1-periodo-fim'),
+    unidade_promotora: get('pb1-unidade-promotora'),
+    coordenadores_instrutores: get('pb1-coordenadores'),
+  };
+}
+
+function pdiPrefillBloco2FromAcaoMatriz(acao) {
+  const empty = {
+    categoria_competencia_mcn: '',
+    subcategoria_competencia_mcn: '',
+    eixo_competencia_mcn: '',
+    unidade_tematica_mcn: '',
+    conhecimento_critico_mcn: '',
+    justificativa_design: '',
+  };
+  if (!acao) return empty;
+  const just = String(acao.justificativa_oferta || '').trim();
+  const matriz = getStorage(STORAGE_KEYS.matriz) || [];
+  const ids = acao.competencias_vinculadas || [];
+  const row = matriz.find(m => ids.some(cid => idEquals(m.id, cid)));
+  if (!row) return { ...empty, justificativa_design: just };
+  const pick = (val, opts) => {
+    const v = String(val || '').trim();
+    if (!v) return '';
+    if (opts.includes(v)) return v;
+    const low = v.toLowerCase();
+    return opts.find(o => o.toLowerCase() === low) || '';
+  };
+  let eixo = pick(row.eixo, PDI_B2_EIXO_OPTS);
+  if (!eixo && row.eixo) {
+    const ex = String(row.eixo).toLowerCase();
+    if (ex.includes('neoprofessor')) eixo = 'Neoaprendizagem e Neoprofessor dos Serviços Penais';
+  }
+  let unidade = pick(row.unidade, PDI_B2_UNIDADE_TEMATICA_OPTS);
+  if (!unidade && row.unidade) {
+    const mapU = { 'educação e cultura para as ppl': 'Ações Educativas para as PPL', 'gestão de dados, informações e conhecimentos': 'Gestão de dados, informações e conhecimentos' };
+    const k = String(row.unidade).toLowerCase();
+    if (mapU[k]) unidade = mapU[k];
+  }
+  const conh = pick(row.conhecimento, PDI_B2_CONHECIMENTOS_OPTS);
+  return {
+    categoria_competencia_mcn: pick(row.categoria, PDI_B2_CATEGORIA_OPTS) || (row.categoria ? String(row.categoria).trim() : ''),
+    subcategoria_competencia_mcn: pick(row.subcategoria, PDI_B2_SUBCATEGORIA_OPTS) || (row.subcategoria ? String(row.subcategoria).trim() : ''),
+    eixo_competencia_mcn: eixo,
+    unidade_tematica_mcn: unidade,
+    conhecimento_critico_mcn: conh,
+    justificativa_design: just,
+  };
+}
+
+function pdiMergeBloco2(stored, acao) {
+  const base = pdiPrefillBloco2FromAcaoMatriz(acao);
+  const s = stored && typeof stored === 'object' ? stored : {};
+  return { ...base, ...s };
+}
+
+function pdiBuildBloco2FormHtml(b2) {
+  const b = b2 || {};
+  return `
+    <div class="form-section" style="margin-top:8px;padding-top:20px;border-top:1px solid var(--gray-200);">
+      <div class="pdi-b1-block-title">BLOCO 2 - Design de Competências MCN-SPB 2026</div>
+      <p class="text-muted" style="font-size:12px;margin:-8px 0 16px;line-height:1.5;">Orienta o alinhamento da ação à Matriz Curricular Nacional.</p>
+      <div class="form-grid">
+        <div class="form-group form-full">
+          <label><span class="pdi-b1-n">10.</span> Categoria de Competência <span style="font-weight:500;color:var(--gray-600);"></span> *</label>
+          <select id="pb2-categoria">
+            <option value="">Selecione…</option>
+            ${pdiOptionsHtml(PDI_B2_CATEGORIA_OPTS, b.categoria_competencia_mcn || '')}
+          </select>
+        </div>
+        <div class="form-group form-full">
+          <label><span class="pdi-b1-n">11.</span> Subcategoria de Competência <span style="font-weight:500;color:var(--gray-600);"></span> *</label>
+          <select id="pb2-subcategoria">
+            <option value="">Selecione…</option>
+            ${pdiOptionsHtml(PDI_B2_SUBCATEGORIA_OPTS, b.subcategoria_competencia_mcn || '')}
+          </select>
+        </div>
+        <div class="form-group form-full">
+          <label><span class="pdi-b1-n">12.</span> Eixo de Competência <span style="font-weight:500;color:var(--gray-600);"></span> *</label>
+          <select id="pb2-eixo">
+            <option value="">Selecione…</option>
+            ${pdiOptionsHtml(PDI_B2_EIXO_OPTS, b.eixo_competencia_mcn || '')}
+          </select>
+        </div>
+        <div class="form-group form-full">
+          <label><span class="pdi-b1-n">13.</span> Unidade Temática <span style="font-weight:500;color:var(--gray-600);"></span> *</label>
+          <select id="pb2-unidade-tematica" style="max-width:100%;">
+            <option value="">Selecione…</option>
+            ${pdiOptionsHtml(PDI_B2_UNIDADE_TEMATICA_OPTS, b.unidade_tematica_mcn || '')}
+          </select>
+        </div>
+        <div class="form-group form-full">
+          <label><span class="pdi-b1-n">14.</span> Conhecimentos Críticos Trabalhados: <span style="font-weight:500;color:var(--gray-600);"></span> *</label>
+          <select id="pb2-conhecimento-critico" style="max-width:100%;">
+            <option value="">Selecione…</option>
+            ${PDI_B2_CONHECIMENTOS_OPTS.map(o => `<option value="${escapeHtmlStr(o)}" ${o === (b.conhecimento_critico_mcn || '') ? 'selected' : ''}>${escapeHtmlStr(o)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group form-full">
+          <label><span class="pdi-b1-n">15.</span> Justificativa *</label>
+          <p class="pdi-b1-hint">(Descreva a relevância da ação educativa à luz do serviço penal, das lacunas de competência identificadas e da valorização profissional. Conecte a proposta com desafios reais, riscos institucionais, demandas éticas, operacionais ou formativas.)</p>
+          <textarea id="pb2-justificativa" rows="5" placeholder="Justificativa alinhada à MCN">${escapeHtmlStr(b.justificativa_design || '')}</textarea>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function pdiCollectBloco2FromForm() {
+  const get = (id) => {
+    const el = document.getElementById(id);
+    return el ? String(el.value || '').trim() : '';
+  };
+  return {
+    categoria_competencia_mcn: get('pb2-categoria'),
+    subcategoria_competencia_mcn: get('pb2-subcategoria'),
+    eixo_competencia_mcn: get('pb2-eixo'),
+    unidade_tematica_mcn: get('pb2-unidade-tematica'),
+    conhecimento_critico_mcn: get('pb2-conhecimento-critico'),
+    justificativa_design: get('pb2-justificativa'),
+  };
+}
+
+function pdiPrefillBloco3FromAcao(a) {
+  const empty = {
+    metodologias_estrategias: '',
+    recursos_humanos_tecnologicos_materiais: '',
+    avaliacao_aprendizagem_transferencia: '',
+    referencias_curadoria: '',
+  };
+  if (!a) return empty;
+  const recParts = [
+    a.recursos_humanos && `Recursos humanos:\n${a.recursos_humanos}`,
+    a.recursos_tecnologicos && `Recursos tecnológicos:\n${a.recursos_tecnologicos}`,
+    a.recursos_materiais && `Recursos materiais:\n${a.recursos_materiais}`,
+    a.espaco_fisico && `Espaço físico:\n${a.espaco_fisico}`,
+    a.plataforma_virtual && `Plataforma virtual:\n${a.plataforma_virtual}`,
+  ].filter(Boolean);
+  let avalParts = [
+    a.instrumento_avaliacao_aprendizagem && `Aprendizagem:\n${a.instrumento_avaliacao_aprendizagem}`,
+    a.instrumento_avaliacao_reacao && `Reação:\n${a.instrumento_avaliacao_reacao}`,
+    a.instrumento_avaliacao_transferencia && `Transferência para a prática:\n${a.instrumento_avaliacao_transferencia}`,
+  ].filter(Boolean);
+  if (!avalParts.length && a.instrumento_avaliacao) avalParts = [`Instrumento(s) de avaliação:\n${a.instrumento_avaliacao}`];
+  const refParts = [a.bibliografia, a.conteudo_programatico].filter(Boolean);
+  return {
+    metodologias_estrategias: String(a.metodologia || '').trim(),
+    recursos_humanos_tecnologicos_materiais: recParts.join('\n\n').trim(),
+    avaliacao_aprendizagem_transferencia: avalParts.join('\n\n').trim(),
+    referencias_curadoria: refParts.join('\n\n---\n\n').trim(),
+  };
+}
+
+function pdiMergeBloco3(stored, acao) {
+  const base = pdiPrefillBloco3FromAcao(acao);
+  const s = stored && typeof stored === 'object' ? stored : {};
+  return { ...base, ...s };
+}
+
+function pdiBuildBloco3FormHtml(b3) {
+  const b = b3 || {};
+  return `
+    <div class="form-section" style="margin-top:8px;padding-top:20px;border-top:1px solid var(--gray-200);">
+      <div class="pdi-b1-block-title">BLOCO 3 - Design da Ação Educativa MCN--2026-SPB</div>
+      <p class="text-muted" style="font-size:12px;margin:-8px 0 16px;line-height:1.5;">Complete os campos conforme o desenho pedagógico da ação e o cadastro único da ação educativa, quando útil.</p>
+      <div class="form-grid">
+        <div class="form-group form-full">
+          <label><span class="pdi-b1-n">16.</span> Metodologias e Estratégias de ensino-aprendizagem *</label>
+          <textarea id="pb3-metodologias" rows="4" placeholder="Metodologias ativas, estratégias, sequência didática, etc.">${escapeHtmlStr(b.metodologias_estrategias || '')}</textarea>
+        </div>
+        <div class="form-group form-full">
+          <label><span class="pdi-b1-n">17.</span> Recursos humanos, tecnológicos e materiais *</label>
+          <textarea id="pb3-recursos" rows="4" placeholder="Equipe, plataformas, materiais de apoio, infraestrutura…">${escapeHtmlStr(b.recursos_humanos_tecnologicos_materiais || '')}</textarea>
+        </div>
+        <div class="form-group form-full">
+          <label><span class="pdi-b1-n">18.</span> Avaliação da Aprendizagem e transferência para a prática *</label>
+          <textarea id="pb3-avaliacao" rows="4" placeholder="Instrumentos, critérios, momentos avaliativos, transferência para o trabalho…">${escapeHtmlStr(b.avaliacao_aprendizagem_transferencia || '')}</textarea>
+        </div>
+        <div class="form-group form-full">
+          <label><span class="pdi-b1-n">19.</span> Referências e Curadoria de Conhecimento *</label>
+          <textarea id="pb3-referencias" rows="4" placeholder="Bibliografia, normas, links curados, bases de dados…">${escapeHtmlStr(b.referencias_curadoria || '')}</textarea>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function pdiCollectBloco3FromForm() {
+  const get = (id) => {
+    const el = document.getElementById(id);
+    return el ? String(el.value || '').trim() : '';
+  };
+  return {
+    metodologias_estrategias: get('pb3-metodologias'),
+    recursos_humanos_tecnologicos_materiais: get('pb3-recursos'),
+    avaliacao_aprendizagem_transferencia: get('pb3-avaliacao'),
+    referencias_curadoria: get('pb3-referencias'),
+  };
+}
+
 function renderPDI() {
   const podeAlterar = !isSomenteLeitura();
   document.getElementById('topbar-actions').innerHTML = `
     ${podeAlterar ? `<button class="btn btn-gold btn-sm" onclick="openPDIForm()"><i class="fas fa-plus"></i> <span class="btn-label">Novo Plano</span></button>` : ''}
-    ${isAdminUser() ? `<button class="btn btn-secondary btn-sm" onclick="importExcelData(STORAGE_KEYS.pdi)" title="Importar Excel"><i class="fas fa-file-import"></i> <span class="btn-label">Importar Excel</span></button>` : ''}
-    <button class="btn btn-secondary btn-sm" onclick="exportPDIDOCX(this)" title="Exportar DOCX (Word)" style="color:#2b579a;">
-      <i class="fas fa-file-word"></i> <span class="btn-label">DOCX</span>
-    </button>
   `;
 
-  const pdis = getStorage(STORAGE_KEYS.pdi) || [];
+  const pdisAll = getStorage(STORAGE_KEYS.pdi) || [];
+  const pdis = pdiListVisibleForCurrentUser(pdisAll);
   const users = getStorage(STORAGE_KEYS.users) || [];
   const trilhas = getStorage(STORAGE_KEYS.trilhas) || [];
   const acoes = getStorage(STORAGE_KEYS.acoes) || [];
@@ -4408,7 +4945,7 @@ function renderPDI() {
     <div class="section-header">
       <div>
         <div class="section-title">Planos de Ensino</div>
-        <div class="section-sub">Acompanhe a execução de trilhas e ações por servidor</div>
+        <div class="section-sub">${isAdminUser() ? 'Todos os servidores' : 'Seus planos'}</div>
       </div>
     </div>
   `;
@@ -4416,68 +4953,52 @@ function renderPDI() {
   if (pdis.length === 0) {
     html += `<div class="empty-state" style="margin-top:60px;">
       <i class="fas fa-clipboard-list"></i>
-      <h3>Nenhum plano de ensino cadastrado</h3>
-      <p>Crie planos de ensino para acompanhar o progresso dos servidores.</p>
-      ${podeAlterar ? `<button class="btn btn-primary" onclick="openPDIForm()"><i class="fas fa-plus"></i> Criar Primeiro Plano</button>` : ''}
+      <h3>${isAdminUser() ? 'Nenhum plano de ensino cadastrado' : 'Você ainda não possui planos de ensino'}</h3>
+      <p>Escolha uma ação educativa e responda aos Blocos 1, 2 e 3 do questionário. O servidor vinculado ao plano é sempre você (${currentUser ? escapeHtmlStr(currentUser.nome) : 'usuário logado'}).</p>
+      ${podeAlterar ? `<button class="btn btn-primary" onclick="openPDIForm()"><i class="fas fa-plus"></i> Criar plano</button>` : ''}
     </div>`;
   } else {
     html += `<div style="display:grid;gap:16px;">`;
-    const statusColors = { 'Não iniciado': 'gray', 'Em andamento': 'gold', 'Concluído': 'green', 'Cancelado': 'red' };
     pdis.forEach(p => {
-      const user = users.find(u => u.id === p.usuario_id);
-      const trilha = trilhas.find(t => t.id === p.trilha_id);
-      const progress = p.progresso || 0;
-      const sc = statusColors[p.status] || 'gray';
+      const trilha = trilhas.find(t => idEquals(t.id, p.trilha_id));
+      const acao = acoes.find(a => idEquals(a.id, p.acao_id));
+      const legado = pdiUsaTrilhaLegado(p);
+      const nomeAe = acao
+        ? String(acao.nome || '—').trim()
+        : (legado && trilha ? String(trilha.nome || '—').trim() : '—');
+      const pb1 = p.plano_bloco1 && typeof p.plano_bloco1 === 'object' ? p.plano_bloco1 : {};
+      const modalidade = (pb1.modalidade && String(pb1.modalidade).trim())
+        || (acao && acao.modalidade && String(acao.modalidade).trim())
+        || '—';
+      const rawIni = pb1.periodo_inicio || p.data_inicio || '';
+      const rawFim = pb1.periodo_fim || p.data_meta || '';
+      const fmtD = (raw) => {
+        if (!raw) return '—';
+        const d = new Date(raw);
+        return Number.isNaN(d.getTime()) ? '—' : d.toLocaleDateString('pt-BR');
+      };
+      const dIni = fmtD(rawIni);
+      const dFim = fmtD(rawFim);
+      const tituloCard = `Plano de ensino - ${nomeAe}`;
+      const autorUser = isAdminUser() ? users.find(u => idEquals(u.id, p.usuario_id)) : null;
+      const linhaAutor = isAdminUser()
+        ? `<div style="font-size:13px;color:var(--gray-600);margin-top:8px;"><span style="font-weight:600;color:var(--gray-500);">Autor</span> ${escapeHtmlStr(autorUser ? (autorUser.nome || '—') : 'Usuário não encontrado')}</div>`
+        : '';
+      const idJson = JSON.stringify(String(p.id));
       html += `
         <div class="card">
-          <div class="card-header">
-            <div style="display:flex;align-items:center;gap:14px;">
-              <div class="user-avatar" style="width:44px;height:44px;font-size:15px;border-radius:12px;background:var(--navy);color:white;display:flex;align-items:center;justify-content:center;font-weight:800;">
-                ${user ? user.nome.substring(0,2).toUpperCase() : 'NN'}
-              </div>
-              <div>
-                <div style="font-size:15px;font-weight:700;">${user ? user.nome : 'Usuário não encontrado'}</div>
-                <div style="font-size:12px;color:var(--gray-500);">${user ? user.cargo : '—'}</div>
-              </div>
-            </div>
-            <div style="display:flex;align-items:center;gap:10px;">
-              <span class="badge badge-${sc}">${p.status||'—'}</span>
-              ${podeAlterar ? `<button class="btn btn-secondary btn-sm" onclick="editPDI('${p.id}')"><i class="fas fa-edit"></i></button>
-              <button class="btn btn-danger btn-sm" onclick="deletePDI('${p.id}')"><i class="fas fa-trash"></i></button>` : ''}
+          <div class="card-header" style="align-items:flex-start;">
+            <div style="font-size:16px;font-weight:700;color:var(--navy);line-height:1.35;flex:1;min-width:0;padding-right:12px;">${escapeHtmlStr(tituloCard)}</div>
+            <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+              <button type="button" class="btn btn-secondary btn-sm" onclick='exportPlanoEnsinoFromTemplate(this, { pdiId: ${idJson} })' title="Baixar plano (.docx) com o modelo institucional" style="color:#2b579a;"><i class="fas fa-file-word"></i></button>
+              ${podeAlterar ? `<button type="button" class="btn btn-secondary btn-sm" onclick="editPDI('${p.id}')" title="Editar"><i class="fas fa-edit"></i></button>
+              <button type="button" class="btn btn-danger btn-sm" onclick="deletePDI('${p.id}')" title="Excluir"><i class="fas fa-trash"></i></button>` : ''}
             </div>
           </div>
-          <div class="card-body">
-            <div class="detail-grid" style="margin-bottom:16px;">
-              <div class="detail-field"><div class="detail-label">Trilha Vinculada</div><div class="detail-value">${trilha ? trilha.nome : '—'}</div></div>
-              <div class="detail-field"><div class="detail-label">Data Início</div><div class="detail-value">${p.data_inicio ? new Date(p.data_inicio).toLocaleDateString('pt-BR') : '—'}</div></div>
-              <div class="detail-field"><div class="detail-label">Data Meta</div><div class="detail-value">${p.data_meta ? new Date(p.data_meta).toLocaleDateString('pt-BR') : '—'}</div></div>
-              <div class="detail-field"><div class="detail-label">Progresso</div><div class="detail-value">${progress}%</div></div>
-            </div>
-            <div>
-              <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:12px;">
-                <span style="font-weight:600;">Progresso Geral</span>
-                <span>${progress}%</span>
-              </div>
-              <div class="progress-bar">
-                <div class="progress-fill ${progress===100?'green':progress>0?'gold':'blue'}" style="width:${progress}%;"></div>
-              </div>
-            </div>
-            ${trilha && p.acoes_status ? `
-              <div style="margin-top:14px;">
-                <div style="font-size:12px;font-weight:700;color:var(--gray-600);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px;">Ações da Trilha</div>
-                ${(trilha.acoes_vinculadas||[]).slice(0,5).map(aid => {
-                  const a = acoes.find(x => idEquals(x.id, aid));
-                  const done = (p.acoes_status||{})[aid];
-                  return a ? `
-                    <label style="display:flex;align-items:center;gap:10px;padding:6px;cursor:pointer;border-radius:6px;font-size:13px;">
-                      <input type="checkbox" ${done?'checked':''} onchange="updatePDIProgress('${p.id}','${aid}',this.checked)" style="width:14px;height:14px;">
-                      <span style="${done?'text-decoration:line-through;color:var(--gray-400);':''}">${a.nome.substring(0,60)}${a.nome.length>60?'…':''}</span>
-                      <span style="margin-left:auto;font-size:11px;color:var(--gray-500);">${a.carga_horaria}h</span>
-                    </label>
-                  ` : '';
-                }).join('')}
-              </div>
-            ` : ''}
+          <div class="card-body" style="padding-top:4px;">
+            ${linhaAutor}
+            <div style="font-size:14px;color:var(--gray-700);${isAdminUser() ? 'margin-top:10px;' : ''}"><span style="color:var(--gray-500);font-weight:600;">Modalidade</span> ${escapeHtmlStr(modalidade)}</div>
+            <div style="font-size:14px;color:var(--gray-700);margin-top:8px;"><span style="color:var(--gray-500);font-weight:600;">Início</span> ${escapeHtmlStr(dIni)} <span style="color:var(--gray-400);margin:0 6px;">·</span> <span style="color:var(--gray-500);font-weight:600;">Fim</span> ${escapeHtmlStr(dFim)}</div>
           </div>
         </div>
       `;
@@ -4488,100 +5009,284 @@ function renderPDI() {
   document.getElementById('page-content').innerHTML = html;
 }
 
-function updatePDIProgress(pdiId, acaoId, checked) {
-  if (isSomenteLeitura()) return;
-  const pdis = getStorage(STORAGE_KEYS.pdi) || [];
-  const trilhas = getStorage(STORAGE_KEYS.trilhas) || [];
-  const idx = pdis.findIndex(p => p.id === pdiId);
-  if (idx < 0) return;
-  if (!pdis[idx].acoes_status) pdis[idx].acoes_status = {};
-  pdis[idx].acoes_status[acaoId] = checked;
-  const trilha = trilhas.find(t => t.id === pdis[idx].trilha_id);
-  if (trilha && trilha.acoes_vinculadas && trilha.acoes_vinculadas.length > 0) {
-    const done = trilha.acoes_vinculadas.filter(aid => pdis[idx].acoes_status[aid]).length;
-    pdis[idx].progresso = Math.round(done / trilha.acoes_vinculadas.length * 100);
-    if (pdis[idx].progresso === 100) pdis[idx].status = 'Concluído';
-    else if (pdis[idx].progresso > 0) pdis[idx].status = 'Em andamento';
+function openPDIPassoSelecionarAcao() {
+  if (!currentUser) {
+    showToast('Faça login para criar um plano.', 'warning');
+    return;
   }
-  setStorage(STORAGE_KEYS.pdi, pdis);
-}
-
-function openPDIForm(id = null) {
-  const pdis = getStorage(STORAGE_KEYS.pdi) || [];
-  const users = getStorage(STORAGE_KEYS.users) || [];
-  const trilhas = getStorage(STORAGE_KEYS.trilhas) || [];
-  const p = id ? (pdis.find(x => x.id === id) || {}) : {};
-  const statusOpts = ['Não iniciado','Em andamento','Concluído','Cancelado'].map(s => `<option ${p.status===s?'selected':''}>${s}</option>`).join('');
+  if (isSomenteLeitura()) return;
+  const acoes = getStorage(STORAGE_KEYS.acoes) || [];
+  const acoesOpts = [...acoes]
+    .filter(a => a && a.status !== 'Inativo')
+    .sort((a, b) => String(a.nome || '').localeCompare(String(b.nome || ''), 'pt-BR'))
+    .map(a => {
+      const label = `${escapeHtmlStr(a.nome || '—')}${a.codigo ? ` (${escapeHtmlStr(String(a.codigo))})` : ''}`;
+      return `<option value="${a.id}">${label}</option>`;
+    })
+    .join('');
   const body = `
-    <div class="form-grid">
-      <div class="form-group form-full">
-        <label>Servidor *</label>
-        <select id="pf-user">
-          <option value="">Selecione o servidor...</option>
-          ${users.filter(u => u.ativo).map(u => `<option value="${u.id}" ${p.usuario_id===u.id?'selected':''}>${u.nome} — ${u.cargo||'—'}</option>`).join('')}
-        </select>
-      </div>
-      <div class="form-group form-full">
-        <label>Trilha Vinculada</label>
-        <select id="pf-trilha">
-          <option value="">Nenhuma</option>
-          ${trilhas.map(t => `<option value="${t.id}" ${p.trilha_id===t.id?'selected':''}>${t.nome}</option>`).join('')}
-        </select>
-      </div>
-      <div class="form-group">
-        <label>Data de Início</label>
-        <input type="date" id="pf-inicio" value="${p.data_inicio||''}">
-      </div>
-      <div class="form-group">
-        <label>Data Meta (Conclusão)</label>
-        <input type="date" id="pf-meta" value="${p.data_meta||''}">
-      </div>
-      <div class="form-group">
-        <label>Status</label>
-        <select id="pf-status">${statusOpts}</select>
-      </div>
-      <div class="form-group">
-        <label>Progresso (%) manual</label>
-        <input type="number" id="pf-progresso" value="${p.progresso||0}" min="0" max="100">
-      </div>
+    <p class="text-muted" style="font-size:13px;margin:0 0 16px;line-height:1.5;">Passo <strong>1</strong> de 2: escolha a ação educativa. Em seguida você preencherá os <strong>Blocos 1, 2 e 3</strong> do questionário. O plano será vinculado a <strong>você</strong> (${escapeHtmlStr(currentUser.nome || 'usuário logado')}).</p>
+    <div class="form-group form-full">
+      <label>Ação educativa *</label>
+      <select id="pdi-sel-acao-passo1" class="form-control" style="width:100%;">
+        <option value="">Selecione…</option>
+        ${acoesOpts}
+      </select>
     </div>
   `;
   const footer = `
-    <button class="btn btn-secondary" onclick="closeModalBtn()">Cancelar</button>
-    <button class="btn btn-primary" onclick="savePDI('${id||''}')"><i class="fas fa-save"></i> ${id?'Salvar':'Criar Plano'}</button>
+    <button type="button" class="btn btn-secondary" onclick="closeModalBtn()">Cancelar</button>
+    <button type="button" class="btn btn-primary" onclick="pdiContinuarDoPasso1()"><i class="fas fa-arrow-right"></i> Continuar</button>
   `;
-  openModal(id ? 'Editar Plano de Ensino' : 'Novo Plano de Ensino', body, footer, false);
+  openModal('Novo plano de ensino — escolher ação', body, footer, false);
+}
+
+window.pdiContinuarDoPasso1 = function() {
+  const sel = document.getElementById('pdi-sel-acao-passo1');
+  const acaoId = sel && sel.value;
+  if (!acaoId) {
+    showToast('Selecione uma ação educativa.', 'warning');
+    return;
+  }
+  closeModalBtn();
+  openPDIQuestionarioWizard({ editId: null, acaoId });
+};
+
+function openPDIQuestionarioWizard({ editId, acaoId }) {
+  if (!currentUser) {
+    showToast('Faça login.', 'warning');
+    return;
+  }
+  if (isSomenteLeitura()) return;
+  const acoes = getStorage(STORAGE_KEYS.acoes) || [];
+  const pdis = getStorage(STORAGE_KEYS.pdi) || [];
+  const acao = acoes.find(a => idEquals(a.id, acaoId));
+  if (!acao) {
+    showToast('Ação educativa não encontrada.', 'error');
+    return;
+  }
+  let prev = null;
+  if (editId) {
+    prev = pdis.find(x => idEquals(x.id, editId));
+    if (!prev) {
+      showToast('Plano não encontrado.', 'error');
+      return;
+    }
+    if (!isAdminUser() && !idEquals(prev.usuario_id, currentUser.id)) {
+      showToast('Você só pode editar seus próprios planos.', 'warning');
+      return;
+    }
+  }
+  const b1 = editId ? pdiMergeBloco1(prev.plano_bloco1, acao) : pdiPrefillBloco1FromAcao(acao);
+  const b2 = editId ? pdiMergeBloco2(prev.plano_bloco2, acao) : pdiPrefillBloco2FromAcaoMatriz(acao);
+  const b3 = editId ? pdiMergeBloco3(prev.plano_bloco3, acao) : pdiPrefillBloco3FromAcao(acao);
+  const servidorNome = escapeHtmlStr(currentUser.nome || '—');
+  const acaoLinha = `${escapeHtmlStr(acao.nome || '—')}${acao.codigo ? ` <span style="color:var(--gray-500);">(${escapeHtmlStr(String(acao.codigo))})</span>` : ''}`;
+  const stepsHtml = editId
+    ? `<div class="pdi-wizard-steps"><span class="active">Questionário</span></div>`
+    : `<div class="pdi-wizard-steps"><span>1. Ação ✓</span><span class="active">2. Questionário</span></div>`;
+  const body = `
+    ${stepsHtml}
+    <div style="padding:14px 16px;background:var(--gray-50);border-radius:12px;margin-bottom:18px;border:1px solid var(--gray-200);">
+      <div style="font-size:12px;font-weight:700;color:var(--gray-600);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:6px;">Servidor (plano)</div>
+      <div style="font-size:15px;font-weight:700;color:var(--navy);">${servidorNome}</div>
+      <div style="font-size:12px;color:var(--gray-600);margin-top:10px;font-weight:700;text-transform:uppercase;">Ação educativa selecionada</div>
+      <div style="font-size:14px;margin-top:4px;line-height:1.45;">${acaoLinha}</div>
+    </div>
+    ${pdiBuildBloco1FormHtml(b1)}
+    ${pdiBuildBloco2FormHtml(b2)}
+    ${pdiBuildBloco3FormHtml(b3)}
+  `;
+  const footer = `
+    <button type="button" class="btn btn-secondary" onclick="closeModalBtn()">Cancelar</button>
+    <button type="button" class="btn btn-primary" onclick="savePDIFromWizard()"><i class="fas fa-save"></i> ${editId ? 'Salvar alterações' : 'Criar plano'}</button>
+  `;
+  openModal(editId ? 'Editar plano de ensino' : 'Novo plano de ensino — questionário (Blocos 1, 2 e 3)', body, footer, true, 'modal-pdi-wizard');
+  document.getElementById('pdi-w-acao-id').value = String(acao.id);
+  document.getElementById('pdi-w-edit-id').value = editId ? String(editId) : '';
+  setTimeout(() => { if (typeof pdiOnPeriodoDateChange === 'function') pdiOnPeriodoDateChange('inicio'); }, 0);
+}
+
+function openPDIForm(id = null) {
+  if (!currentUser) {
+    showToast('Faça login.', 'warning');
+    return;
+  }
+  if (isSomenteLeitura()) return;
+  if (!id) {
+    openPDIPassoSelecionarAcao();
+    return;
+  }
+  const pdis = getStorage(STORAGE_KEYS.pdi) || [];
+  const p = pdis.find(x => idEquals(x.id, id));
+  if (!p) {
+    showToast('Plano não encontrado.', 'warning');
+    return;
+  }
+  if (!p.acao_id) {
+    showToast('Este plano ainda está no formato antigo (sem ação vinculada).', 'warning');
+    return;
+  }
+  openPDIQuestionarioWizard({ editId: id, acaoId: p.acao_id });
 }
 
 function editPDI(id) { openPDIForm(id); }
 
-function savePDI(id) {
-  const userId = document.getElementById('pf-user').value;
-  if (!userId) { showToast('Selecione o servidor', 'warning'); return; }
-  const trilhaId = document.getElementById('pf-trilha').value;
-  const trilhas = getStorage(STORAGE_KEYS.trilhas) || [];
-  const trilha = trilhas.find(t => t.id === trilhaId);
+window.savePDIFromWizard = function() {
+  const acaoId = (document.getElementById('pdi-w-acao-id') || {}).value;
+  const editIdRaw = (document.getElementById('pdi-w-edit-id') || {}).value || '';
+  const editId = editIdRaw ? editIdRaw : null;
+  if (!acaoId) {
+    showToast('Ação não identificada. Reabra o formulário.', 'error');
+    return;
+  }
+  const b1 = pdiCollectBloco1FromForm();
+  if (!b1.titulo_acao) {
+    showToast('Preencha o título da ação educativa (Bloco 1).', 'warning');
+    return;
+  }
+  if (!b1.publico_alvo) {
+    showToast('Selecione o público-alvo.', 'warning');
+    return;
+  }
+  if (b1.publico_alvo === 'Outros' && !b1.publico_alvo_outros) {
+    showToast('Descreva o público quando selecionar "Outros".', 'warning');
+    return;
+  }
+  if (!b1.objetivo_geral) {
+    showToast('Preencha o objetivo geral da ação educativa.', 'warning');
+    return;
+  }
+  if (!b1.tipo_acao) {
+    showToast('Selecione o tipo da ação educativa.', 'warning');
+    return;
+  }
+  if (b1.tipo_acao === 'Outra' && !b1.tipo_acao_outra) {
+    showToast('Especifique o tipo quando escolher "Outra".', 'warning');
+    return;
+  }
+  if (!b1.modalidade) {
+    showToast('Selecione a modalidade.', 'warning');
+    return;
+  }
+  const chNum = parseInt(b1.carga_horaria_total, 10);
+  if (!b1.carga_horaria_total || Number.isNaN(chNum) || chNum < 0) {
+    showToast('Informe a carga horária total (número válido).', 'warning');
+    return;
+  }
+  if (!b1.periodo_inicio) {
+    showToast('Informe a data de início do período de realização (item 7).', 'warning');
+    return;
+  }
+  if (!b1.periodo_fim) {
+    showToast('Informe a data de fim do período de realização (item 7).', 'warning');
+    return;
+  }
+  const tIni = pdiParseDateOnly(b1.periodo_inicio);
+  const tFim = pdiParseDateOnly(b1.periodo_fim);
+  if (tIni == null || tFim == null) {
+    showToast('Use datas válidas no período de realização (início e fim).', 'warning');
+    return;
+  }
+  if (tIni > tFim) {
+    showToast('A data de início não pode ser posterior à data de fim.', 'warning');
+    return;
+  }
+  const b2 = pdiCollectBloco2FromForm();
+  if (!b2.categoria_competencia_mcn) {
+    showToast('Bloco 2: selecione a categoria de competência (item 10).', 'warning');
+    return;
+  }
+  if (!PDI_B2_CATEGORIA_OPTS.includes(b2.categoria_competencia_mcn)) {
+    showToast('Bloco 2: categoria de competência inválida.', 'error');
+    return;
+  }
+  if (!b2.subcategoria_competencia_mcn) {
+    showToast('Bloco 2: selecione a subcategoria de competência (item 11).', 'warning');
+    return;
+  }
+  if (!PDI_B2_SUBCATEGORIA_OPTS.includes(b2.subcategoria_competencia_mcn)) {
+    showToast('Bloco 2: subcategoria inválida.', 'error');
+    return;
+  }
+  if (!b2.eixo_competencia_mcn) {
+    showToast('Bloco 2: selecione o eixo de competência (item 12).', 'warning');
+    return;
+  }
+  if (!PDI_B2_EIXO_OPTS.includes(b2.eixo_competencia_mcn)) {
+    showToast('Bloco 2: eixo de competência inválido.', 'error');
+    return;
+  }
+  if (!b2.unidade_tematica_mcn) {
+    showToast('Bloco 2: selecione a unidade temática (item 13).', 'warning');
+    return;
+  }
+  if (!PDI_B2_UNIDADE_TEMATICA_OPTS.includes(b2.unidade_tematica_mcn)) {
+    showToast('Bloco 2: unidade temática inválida.', 'error');
+    return;
+  }
+  if (!b2.conhecimento_critico_mcn) {
+    showToast('Bloco 2: selecione o conhecimento crítico trabalhado (item 14).', 'warning');
+    return;
+  }
+  if (!PDI_B2_CONHECIMENTOS_OPTS.includes(b2.conhecimento_critico_mcn)) {
+    showToast('Bloco 2: escolha um conhecimento crítico da lista oficial (item 14).', 'warning');
+    return;
+  }
+  if (!b2.justificativa_design) {
+    showToast('Bloco 2: preencha a justificativa (item 15).', 'warning');
+    return;
+  }
+  const b3 = pdiCollectBloco3FromForm();
+  if (!b3.metodologias_estrategias) {
+    showToast('Bloco 3: preencha as metodologias e estratégias (item 16).', 'warning');
+    return;
+  }
+  if (!b3.recursos_humanos_tecnologicos_materiais) {
+    showToast('Bloco 3: preencha recursos humanos, tecnológicos e materiais (item 17).', 'warning');
+    return;
+  }
+  if (!b3.avaliacao_aprendizagem_transferencia) {
+    showToast('Bloco 3: preencha a avaliação da aprendizagem e transferência (item 18).', 'warning');
+    return;
+  }
+  if (!b3.referencias_curadoria) {
+    showToast('Bloco 3: preencha referências e curadoria (item 19).', 'warning');
+    return;
+  }
   const data = getStorage(STORAGE_KEYS.pdi) || [];
-  const prev = id ? data.find(x => x.id === id) : null;
+  const prev = editId ? data.find(x => idEquals(x.id, editId)) : null;
+  const usuarioId = prev ? prev.usuario_id : currentUser.id;
+  if (!isAdminUser() && prev && !idEquals(prev.usuario_id, currentUser.id)) {
+    showToast('Você não pode alterar este plano.', 'warning');
+    return;
+  }
+  if (!prev && !isAdminUser() && !idEquals(usuarioId, currentUser.id)) {
+    showToast('Erro de consistência do usuário.', 'error');
+    return;
+  }
   const rec = {
-    usuario_id: userId,
-    trilha_id: trilhaId,
-    data_inicio: document.getElementById('pf-inicio').value,
-    data_meta: document.getElementById('pf-meta').value,
-    status: document.getElementById('pf-status').value,
-    progresso: parseInt(document.getElementById('pf-progresso').value)||0,
-    acoes_status: prev && prev.acoes_status
-      ? prev.acoes_status
-      : (trilha ? (trilha.acoes_vinculadas||[]).reduce((obj, aid) => ({...obj, [aid]: false}), {}) : {}),
+    usuario_id: usuarioId,
+    acao_id: acaoId,
+    plano_bloco1: b1,
+    plano_bloco2: b2,
+    plano_bloco3: b3,
+    data_inicio: b1.periodo_inicio,
+    data_meta: b1.periodo_fim,
   };
-  if (id) {
-    const idx = data.findIndex(x => x.id === id);
+  if (editId) {
+    const idx = data.findIndex(x => idEquals(x.id, editId));
     if (idx < 0) return;
     const merged = { ...data[idx], ...rec };
+    delete merged.trilha_id;
+    delete merged.progresso;
+    delete merged.status;
+    delete merged.acoes_status;
     if (usaFilaModeracao()) {
-      pushFilaModeracao('pdi_upsert', { editId: id, registro: merged });
+      pushFilaModeracao('pdi_upsert', { editId, registro: merged });
       closeModalBtn();
       showToast('Alteração enviada para aprovação do administrador.', 'info');
+      renderPDI();
       return;
     }
     data[idx] = merged;
@@ -4591,15 +5296,16 @@ function savePDI(id) {
       pushFilaModeracao('pdi_upsert', { editId: null, registro: novo });
       closeModalBtn();
       showToast('Cadastro enviado para aprovação do administrador.', 'info');
+      renderPDI();
       return;
     }
     data.push(novo);
   }
   setStorage(STORAGE_KEYS.pdi, data);
   closeModalBtn();
-  showToast(id ? 'Plano de ensino atualizado!' : 'Plano de ensino criado!', 'success');
+  showToast(editId ? 'Plano de ensino atualizado!' : 'Plano de ensino criado!', 'success');
   renderPDI();
-}
+};
 
 function deletePDI(id) {
   if (!confirm('Deseja excluir este plano de ensino?')) return;
@@ -4618,20 +5324,109 @@ function deletePDI(id) {
 // ================================================================
 // MODERAÇÃO / APROVAÇÕES (ADMIN)
 // ================================================================
-function renderModeracao() {
-  if (currentUser.acesso !== 'Administrador') {
-    document.getElementById('page-content').innerHTML = `<div class="empty-state"><i class="fas fa-lock"></i><h3>Acesso restrito</h3><p>Apenas administradores podem acessar aprovações e histórico.</p></div>`;
-    return;
-  }
-  document.getElementById('topbar-actions').innerHTML = '';
-  updateModeracaoNavBadge();
+function renderModeracaoHistoricoTable() {
+  const wrap = document.getElementById('moderacao-historico-content');
+  const sub = document.getElementById('moderacao-historico-sub');
+  if (!wrap) return;
 
-  const fila = getStorage(STORAGE_KEYS.moderacao) || [];
   const historico = [...(getStorage(STORAGE_KEYS.moderacao_historico) || [])].sort((a, b) => {
     const ta = new Date(a.decidido_em || a.solicitada_em || 0).getTime();
     const tb = new Date(b.decidido_em || b.solicitada_em || 0).getTime();
     return tb - ta;
   });
+  const total = historico.length;
+
+  if (sub) {
+    sub.textContent = total === 0
+      ? 'Nenhuma decisão registrada ainda.'
+      : `${total} decisão(ões) · ordenadas do mais recente ao mais antigo · ${moderacaoHistoricoPerPage} por página`;
+  }
+
+  if (total === 0) {
+    wrap.innerHTML = `
+      <div class="table-responsive">
+        <table>
+          <thead>
+            <tr>
+              <th>Decidido em</th>
+              <th>Resultado</th>
+              <th>Tipo</th>
+              <th>Resumo</th>
+              <th>Solicitante</th>
+              <th>Aprovado por</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td colspan="6" style="padding:24px;text-align:center;color:var(--gray-500);">Nenhuma decisão registrada ainda.</td></tr>
+          </tbody>
+        </table>
+      </div>`;
+    return;
+  }
+
+  const totalPages = Math.ceil(total / moderacaoHistoricoPerPage);
+  if (moderacaoHistoricoPage > totalPages) moderacaoHistoricoPage = totalPages;
+  if (moderacaoHistoricoPage < 1) moderacaoHistoricoPage = 1;
+  const start = (moderacaoHistoricoPage - 1) * moderacaoHistoricoPerPage;
+  const page = historico.slice(start, start + moderacaoHistoricoPerPage);
+
+  const historicoRows = page.map(h => {
+    const st = h.status === 'aprovado' ? 'green' : 'red';
+    const stLabel = h.status === 'aprovado' ? 'Aprovado' : 'Recusado';
+    const nomeDec = escapeHtmlStr(h.decidido_por_nome || '—');
+    const nomeSol = escapeHtmlStr(h.solicitante_nome || '—');
+    const tipoLabelEsc = escapeHtmlStr(getModeracaoTipoLabel(h.tipo));
+    const resumoEsc = escapeHtmlStr(getModeracaoResumo({ tipo: h.tipo, payload: h.payload }));
+    const motivo = h.motivo_rejeicao ? `<div style="font-size:11px;color:var(--gray-600);margin-top:4px;">Motivo: ${escapeHtmlStr(h.motivo_rejeicao)}</div>` : '';
+    return `
+      <tr onclick="verDetalheModeracaoHistorico('${String(h.id).replace(/'/g, "\\'")}')" style="cursor:pointer;">
+        <td style="font-size:12px;white-space:nowrap;">${h.decidido_em ? new Date(h.decidido_em).toLocaleString('pt-BR') : '—'}</td>
+        <td><span class="badge badge-${st}">${stLabel}</span></td>
+        <td><span class="badge badge-gray">${tipoLabelEsc}</span></td>
+        <td style="font-size:13px;max-width:380px;line-height:1.45;">${resumoEsc}${motivo}</td>
+        <td style="font-size:13px;">${nomeSol}</td>
+        <td style="font-size:13px;">${nomeDec}</td>
+      </tr>`;
+  }).join('');
+
+  wrap.innerHTML = `
+    <div class="table-responsive">
+      <table>
+        <thead>
+          <tr>
+            <th>Decidido em</th>
+            <th>Resultado</th>
+            <th>Tipo</th>
+            <th>Resumo</th>
+            <th>Solicitante</th>
+            <th>Aprovado por</th>
+          </tr>
+        </thead>
+        <tbody>${historicoRows}</tbody>
+      </table>
+    </div>
+    <div class="table-footer">
+      <div class="page-info">Exibindo ${start + 1}–${Math.min(start + moderacaoHistoricoPerPage, total)} de <strong>${total}</strong> registros</div>
+      <div class="pagination">
+        <button class="page-btn" onclick="moderacaoHistoricoPage=Math.max(1,moderacaoHistoricoPage-1);renderModeracaoHistoricoTable()" ${moderacaoHistoricoPage <= 1 ? 'disabled' : ''}><i class="fas fa-chevron-left"></i></button>
+        ${getPaginationButtons(moderacaoHistoricoPage, totalPages, 'moderacaoHistoricoPage', 'renderModeracaoHistoricoTable()')}
+        <button class="page-btn" onclick="moderacaoHistoricoPage=Math.min(${totalPages},moderacaoHistoricoPage+1);renderModeracaoHistoricoTable()" ${moderacaoHistoricoPage >= totalPages ? 'disabled' : ''}><i class="fas fa-chevron-right"></i></button>
+      </div>
+    </div>
+  `;
+}
+
+function renderModeracao() {
+  if (currentUser.acesso !== 'Administrador') {
+    document.getElementById('page-content').innerHTML = `<div class="empty-state"><i class="fas fa-lock"></i><h3>Acesso restrito</h3><p>Apenas administradores podem acessar aprovações e histórico.</p></div>`;
+    return;
+  }
+  invalidateStorageCacheKey(STORAGE_KEYS.moderacao);
+  invalidateStorageCacheKey(STORAGE_KEYS.moderacao_historico);
+  document.getElementById('topbar-actions').innerHTML = '';
+  updateModeracaoNavBadge();
+
+  const fila = getStorage(STORAGE_KEYS.moderacao) || [];
 
   const pendentesRows = fila.length
     ? fila.map(it => {
@@ -4642,7 +5437,7 @@ function renderModeracao() {
           <tr>
             <td style="font-size:12px;white-space:nowrap;">${new Date(it.criado_em).toLocaleString('pt-BR')}</td>
             <td><span class="badge badge-orange">${tipoLabelEsc}</span></td>
-            <td style="font-size:13px;max-width:280px;">${resumoEsc}</td>
+            <td style="font-size:13px;max-width:420px;line-height:1.45;">${resumoEsc}</td>
             <td style="font-size:13px;">${nomeEsc}</td>
             <td style="white-space:nowrap;">
               <button type="button" class="btn btn-primary btn-sm" style="width:7.25rem;box-sizing:border-box;" onclick="aprovarModeracaoItem('${it.id}')">Aprovar</button>
@@ -4652,27 +5447,7 @@ function renderModeracao() {
       }).join('')
     : `<tr><td colspan="5" style="padding:24px;text-align:center;color:var(--gray-500);">Nenhuma solicitação pendente.</td></tr>`;
 
-  const historicoRows = historico.length
-    ? historico.map(h => {
-        const st = h.status === 'aprovado' ? 'green' : 'red';
-        const stLabel = h.status === 'aprovado' ? 'Aprovado' : 'Recusado';
-        const nomeDec = escapeHtmlStr(h.decidido_por_nome || '—');
-        const nomeSol = escapeHtmlStr(h.solicitante_nome || '—');
-        const tipoLabelEsc = escapeHtmlStr(getModeracaoTipoLabel(h.tipo));
-        const resumoEsc = escapeHtmlStr(getModeracaoResumo({ tipo: h.tipo, payload: h.payload }));
-        const motivo = h.motivo_rejeicao ? `<div style="font-size:11px;color:var(--gray-600);margin-top:4px;">Motivo: ${escapeHtmlStr(h.motivo_rejeicao)}</div>` : '';
-        return `
-          <tr>
-            <td style="font-size:12px;white-space:nowrap;">${h.decidido_em ? new Date(h.decidido_em).toLocaleString('pt-BR') : '—'}</td>
-            <td><span class="badge badge-${st}">${stLabel}</span></td>
-            <td><span class="badge badge-gray">${tipoLabelEsc}</span></td>
-            <td style="font-size:13px;max-width:220px;">${resumoEsc}${motivo}</td>
-            <td style="font-size:13px;">${nomeSol}</td>
-            <td style="font-size:13px;">${nomeDec}</td>
-          </tr>`;
-      }).join('')
-    : `<tr><td colspan="6" style="padding:24px;text-align:center;color:var(--gray-500);">Nenhuma decisão registrada ainda.</td></tr>`;
-
+  moderacaoHistoricoPage = 1;
   document.getElementById('page-content').innerHTML = `
     <div class="section-header">
       <div>
@@ -4705,25 +5480,12 @@ function renderModeracao() {
     <div class="table-card">
       <div style="padding:16px 20px;border-bottom:1px solid var(--gray-100);">
         <div class="section-title" style="font-size:16px;">Histórico de decisões</div>
-        <div class="section-sub">Últimas ${MODERACAO_HISTORICO_MAX} entradas (mais recentes primeiro)</div>
+        <div class="section-sub" id="moderacao-historico-sub">Carregando…</div>
       </div>
-      <div class="table-responsive">
-        <table>
-          <thead>
-            <tr>
-              <th>Decidido em</th>
-              <th>Resultado</th>
-              <th>Tipo</th>
-              <th>Resumo</th>
-              <th>Solicitante</th>
-              <th>Aprovado por</th>
-            </tr>
-          </thead>
-          <tbody>${historicoRows}</tbody>
-        </table>
-      </div>
+      <div id="moderacao-historico-content"></div>
     </div>
   `;
+  renderModeracaoHistoricoTable();
 }
 
 // ================================================================
@@ -5160,6 +5922,249 @@ async function saveDocx(sections, filename) {
   saveAs(blob, filename);
 }
 
+const PLANO_ENSINO_TEMPLATE_DOCX = 'templates/Modelo de Plano de ensino.docx';
+
+function getPizZip() {
+  return typeof window !== 'undefined' ? window.PizZip : null;
+}
+
+function fmtPlanoDateDocx(raw) {
+  if (!raw) return '—';
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleDateString('pt-BR');
+}
+
+/** Texto seguro para w:t em WordprocessingML. */
+function escapeDocxText(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function docxWParagraphField(label, value) {
+  const lines = String(value ?? '').split(/\n/);
+  let inner = `<w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">${escapeDocxText(label)}:</w:t></w:r>`;
+  inner += `<w:r><w:t xml:space="preserve"> ${escapeDocxText(lines[0] || '—')}</w:t></w:r>`;
+  for (let i = 1; i < lines.length; i++) {
+    inner += '<w:r><w:br/></w:r>';
+    inner += `<w:r><w:t xml:space="preserve">${escapeDocxText(lines[i])}</w:t></w:r>`;
+  }
+  return `<w:p><w:pPr><w:spacing w:after="80"/></w:pPr>${inner}</w:p>`;
+}
+
+function docxWParagraphTitle(text) {
+  return `<w:p><w:pPr><w:spacing w:before="160" w:after="120"/></w:pPr><w:r><w:rPr><w:b/><w:sz w:val="28"/><w:szCs w:val="28"/></w:rPr><w:t xml:space="preserve">${escapeDocxText(text)}</w:t></w:r></w:p>`;
+}
+
+function docxWParagraphMeta(text) {
+  return `<w:p><w:pPr><w:spacing w:after="160"/></w:pPr><w:r><w:rPr><w:i/><w:color w:val="666666"/><w:sz w:val="20"/></w:rPr><w:t xml:space="preserve">${escapeDocxText(text)}</w:t></w:r></w:p>`;
+}
+
+function docxWParagraphBody(text) {
+  return `<w:p><w:pPr><w:spacing w:after="40"/></w:pPr><w:r><w:t xml:space="preserve">${escapeDocxText(text)}</w:t></w:r></w:p>`;
+}
+
+function buildPlanoEnsinoBodyXmlFragment(sections, legadoLista) {
+  let meta = `ESPEN / SENAPPEN — ${new Date().toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' })}`;
+  if (typeof currentUser !== 'undefined' && currentUser && currentUser.nome) meta += ` — ${currentUser.nome}`;
+  let xml = '';
+  xml += docxWParagraphTitle('Plano de ensino');
+  xml += docxWParagraphMeta(meta);
+  sections.forEach((sec) => {
+    xml += docxWParagraphTitle(sec.title);
+    sec.rows.forEach(([k, v]) => {
+      xml += docxWParagraphField(k, v);
+    });
+  });
+  if (legadoLista && legadoLista.length) {
+    xml += docxWParagraphTitle('Ações da trilha (formato legado)');
+    legadoLista.forEach((line) => {
+      xml += docxWParagraphBody(line);
+    });
+  }
+  return xml;
+}
+
+function mergePlanoBodyIntoDocumentXml(documentXml, fragmentXml) {
+  const bodyOpen = '<w:body>';
+  const bodyIdx = documentXml.indexOf(bodyOpen);
+  const sectIdx = documentXml.indexOf('<w:sectPr', bodyIdx + 1);
+  if (bodyIdx < 0 || sectIdx < 0) {
+    throw new Error('O modelo Word não tem a estrutura esperada (word/document.xml: <w:body> … <w:sectPr>).');
+  }
+  return documentXml.slice(0, bodyIdx + bodyOpen.length) + fragmentXml + documentXml.slice(sectIdx);
+}
+
+function gatherPlanoEnsinoTemplateSections(p, users, acoes, trilhas) {
+  const user = users.find((u) => idEquals(u.id, p.usuario_id));
+  const acao = acoes.find((a) => idEquals(a.id, p.acao_id));
+  const trilha = trilhas.find((t) => idEquals(t.id, p.trilha_id));
+  const legado = pdiUsaTrilhaLegado(p);
+  const pb = p.plano_bloco1 && typeof p.plano_bloco1 === 'object' ? p.plano_bloco1 : {};
+  const p2 = p.plano_bloco2 && typeof p.plano_bloco2 === 'object' ? p.plano_bloco2 : {};
+  const p3 = p.plano_bloco3 && typeof p.plano_bloco3 === 'object' ? p.plano_bloco3 : {};
+  const sections = [];
+
+  sections.push({
+    title: 'Dados do servidor',
+    rows: [
+      ['Nome', user ? user.nome : '—'],
+      ['CPF', user ? user.cpf : '—'],
+      ['E-mail', user ? user.email : '—'],
+      ['Cargo', user ? user.cargo : '—'],
+      ['Nível de acesso', user ? user.acesso : '—'],
+    ],
+  });
+
+  const planoRows = [];
+  if (acao) {
+    planoRows.push(['Ação educativa', acao.nome || '—']);
+    planoRows.push(['Código', acao.codigo || '—']);
+    planoRows.push(['Modalidade (cadastro da ação)', acao.modalidade || '—']);
+    planoRows.push(['Carga horária (cadastro)', `${acao.carga_horaria || 0}h`]);
+  } else if (legado && trilha) {
+    planoRows.push(['Trilha (formato antigo)', trilha.nome || '—']);
+    planoRows.push(['Nível da trilha', trilha.nivel || '—']);
+    planoRows.push(['Eixo funcional', trilha.eixo_funcional || '—']);
+  } else {
+    planoRows.push(['Ação educativa', '—']);
+  }
+  planoRows.push(['Data de início', fmtPlanoDateDocx(p.data_inicio)]);
+  planoRows.push(['Data fim / meta', fmtPlanoDateDocx(p.data_meta)]);
+  sections.push({ title: 'Dados do plano', rows: planoRows });
+
+  if (pb && typeof pb === 'object') {
+    sections.push({
+      title: 'Bloco 1 — Identificação da ação educativa',
+      rows: [
+        ['Título da ação educativa', pb.titulo_acao || '—'],
+        ['Público-alvo', `${pb.publico_alvo || '—'}${pb.publico_alvo === 'Outros' && pb.publico_alvo_outros ? ` — ${pb.publico_alvo_outros}` : ''}`],
+        ['Observações / descrição', pb.observacoes || '—'],
+        ['Objetivo geral', pb.objetivo_geral || '—'],
+        ['Tipo da ação', `${pb.tipo_acao || '—'}${pb.tipo_acao === 'Outra' && pb.tipo_acao_outra ? ` (${pb.tipo_acao_outra})` : ''}`],
+        ['Modalidade (plano)', pb.modalidade || '—'],
+        ['Carga horária total (h)', pb.carga_horaria_total != null ? String(pb.carga_horaria_total) : '—'],
+        ['Período — início', fmtPlanoDateDocx(pb.periodo_inicio)],
+        ['Período — fim', fmtPlanoDateDocx(pb.periodo_fim)],
+        ['Unidade promotora / Escola', pb.unidade_promotora || '—'],
+        ['Coordenadores(as) / Instrutores(as)', pb.coordenadores_instrutores || '—'],
+      ],
+    });
+  }
+
+  if (p2 && typeof p2 === 'object') {
+    sections.push({
+      title: 'Bloco 2 — Design de competências (MCN-SPB 2026)',
+      rows: [
+        ['10. Categoria de competência', p2.categoria_competencia_mcn || '—'],
+        ['11. Subcategoria de competência', p2.subcategoria_competencia_mcn || '—'],
+        ['12. Eixo de competência', p2.eixo_competencia_mcn || '—'],
+        ['13. Unidade temática', p2.unidade_tematica_mcn || '—'],
+        ['14. Conhecimentos críticos trabalhados', p2.conhecimento_critico_mcn || '—'],
+        ['15. Justificativa', p2.justificativa_design || '—'],
+      ],
+    });
+  }
+
+  if (p3 && typeof p3 === 'object') {
+    sections.push({
+      title: 'Bloco 3 — Design da ação educativa (MCN—2026-SPB)',
+      rows: [
+        ['16. Metodologias e estratégias', p3.metodologias_estrategias || '—'],
+        ['17. Recursos humanos, tecnológicos e materiais', p3.recursos_humanos_tecnologicos_materiais || '—'],
+        ['18. Avaliação da aprendizagem e transferência', p3.avaliacao_aprendizagem_transferencia || '—'],
+        ['19. Referências e curadoria', p3.referencias_curadoria || '—'],
+      ],
+    });
+  }
+
+  let legadoLista = null;
+  if (legado && trilha && (trilha.acoes_vinculadas || []).length > 0) {
+    legadoLista = trilha.acoes_vinculadas
+      .map((aid) => acoes.find((x) => idEquals(x.id, aid)))
+      .filter(Boolean)
+      .map((a, ai) => `${ai + 1}. ${a.nome} (${a.modalidade || '—'} · ${a.carga_horaria || 0}h)`);
+    const totalH = trilha.acoes_vinculadas.reduce((sum, aid) => {
+      const a = acoes.find((x) => idEquals(x.id, aid));
+      return sum + (a ? a.carga_horaria || 0 : 0);
+    }, 0);
+    legadoLista.push(`Carga horária total da trilha: ${totalH}h`);
+  }
+
+  return { sections, legadoLista };
+}
+
+/**
+ * Gera um .docx a partir do ficheiro-template real (cabeçalho, estilos, fontes do modelo)
+ * inserindo o texto do plano no corpo (word/document.xml). Para PDF, abra no Word e use «Guardar como PDF».
+ */
+window.exportPlanoEnsinoFromTemplate = async function exportPlanoEnsinoFromTemplate(btn, opts) {
+  opts = opts || {};
+  const resetBtn = () => {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="fas fa-file-word"></i>';
+    }
+  };
+  const PizZip = getPizZip();
+  if (!PizZip || typeof saveAs !== 'function') {
+    showToast('Bibliotecas necessárias não carregaram (PizZip / FileSaver). Atualize a página.', 'error');
+    return;
+  }
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+  }
+
+  const pdis = pdiListVisibleForCurrentUser(getStorage(STORAGE_KEYS.pdi) || []);
+  const users = getStorage(STORAGE_KEYS.users) || [];
+  const trilhas = getStorage(STORAGE_KEYS.trilhas) || [];
+  const acoes = getStorage(STORAGE_KEYS.acoes) || [];
+
+  if (opts.pdiId == null || String(opts.pdiId) === '') {
+    resetBtn();
+    showToast('Identificador do plano ausente.', 'error');
+    return;
+  }
+  const p = pdis.find((row) => idEquals(row.id, opts.pdiId));
+  if (!p) {
+    resetBtn();
+    showToast('Plano não encontrado ou sem permissão para exportar.', 'warning');
+    return;
+  }
+
+  try {
+    const res = await fetch(encodeURI(PLANO_ENSINO_TEMPLATE_DOCX), { cache: 'no-store' });
+    if (!res.ok) {
+      throw new Error(`Modelo não encontrado (${res.status}). Caminho esperado: templates/Modelo de Plano de ensino.docx`);
+    }
+    const buf = await res.arrayBuffer();
+    const zip = new PizZip(buf);
+    const docFile = zip.file('word/document.xml');
+    if (!docFile) throw new Error('O modelo .docx não contém word/document.xml.');
+    const documentXml = docFile.asText();
+    const { sections, legadoLista } = gatherPlanoEnsinoTemplateSections(p, users, acoes, trilhas);
+    const fragment = buildPlanoEnsinoBodyXmlFragment(sections, legadoLista);
+    const newDocXml = mergePlanoBodyIntoDocumentXml(documentXml, fragment);
+    zip.file('word/document.xml', newDocXml);
+    const blob = zip.generate({
+      type: 'blob',
+      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    });
+    saveAs(blob, `Plano_ensino_${new Date().toISOString().slice(0, 10)}.docx`);
+    showToast('Documento gerado a partir do modelo institucional.', 'success');
+  } catch (e) {
+    console.error(e);
+    showToast(e.message ? String(e.message) : 'Não foi possível gerar o documento.', 'error');
+  } finally {
+    resetBtn();
+  }
+};
+
 // ================================================================
 // EXPORT DOCX — MATRIZ DE COMPETÊNCIAS
 // ================================================================
@@ -5416,32 +6421,57 @@ async function exportAcoesDOCX(btn) {
 // ================================================================
 // EXPORT DOCX — PLANOS DE ENSINO
 // ================================================================
-async function exportPDIDOCX(btn) {
+async function exportPDIDOCX(btn, opts) {
+  opts = opts || {};
+  const resetBtn = () => {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="fas fa-file-word"></i>';
+    }
+  };
   if (!getDocx()) { showToast('Biblioteca DOCX ainda carregando, aguarde.', 'warning'); return; }
   if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>'; }
-  const pdis    = getStorage(STORAGE_KEYS.pdi)     || [];
+  let pdis = pdiListVisibleForCurrentUser(getStorage(STORAGE_KEYS.pdi) || []);
   const users   = getStorage(STORAGE_KEYS.users)   || [];
   const trilhas = getStorage(STORAGE_KEYS.trilhas) || [];
   const acoes   = getStorage(STORAGE_KEYS.acoes)   || [];
 
-  if (pdis.length === 0) { showToast('Nenhum plano de ensino para exportar.', 'warning'); return; }
-  showToast(`Gerando DOCX com ${pdis.length} plano(s) de ensino...`, 'info');
+  if (opts.pdiId != null && String(opts.pdiId) !== '') {
+    const one = pdis.find(p => idEquals(p.id, opts.pdiId));
+    if (!one) {
+      resetBtn();
+      showToast('Plano não encontrado ou você não tem permissão para exportá-lo.', 'warning');
+      return;
+    }
+    pdis = [one];
+  }
+
+  if (pdis.length === 0) {
+    resetBtn();
+    showToast('Nenhum plano de ensino para exportar.', 'warning');
+    return;
+  }
+  showToast(pdis.length === 1 ? 'Gerando DOCX do plano de ensino…' : `Gerando DOCX com ${pdis.length} plano(s) de ensino…`, 'info');
 
   const d = getDocx();
   const c = docxStyles();
 
+  const headerTitle = pdis.length === 1 ? 'Plano de Ensino' : 'Planos de Ensino';
+  const headerSub = pdis.length === 1
+    ? 'ESPEN / SENAPPEN · documento único'
+    : `ESPEN / SENAPPEN  •  ${pdis.length} plano(s) cadastrado(s)`;
+
   const children = [
-    ...docxHeader(
-      'Planos de Ensino',
-      `ESPEN / SENAPPEN  •  ${pdis.length} plano(s) cadastrado(s)`
-    ),
+    ...docxHeader(headerTitle, headerSub),
   ];
 
   pdis.forEach((p, idx) => {
     if (idx > 0) children.push(docxPageBreak());
 
-    const user   = users.find(u => u.id === p.usuario_id);
-    const trilha = trilhas.find(t => t.id === p.trilha_id);
+    const user = users.find(u => idEquals(u.id, p.usuario_id));
+    const acao = acoes.find(a => idEquals(a.id, p.acao_id));
+    const trilha = trilhas.find(t => idEquals(t.id, p.trilha_id));
+    const legado = pdiUsaTrilhaLegado(p);
     const nomeServidor = user ? user.nome : 'Servidor não encontrado';
 
     // Título do plano
@@ -5456,20 +6486,6 @@ async function exportPDIDOCX(btn) {
       }),
     );
 
-    // Barra de progresso textual
-    const prog = p.progresso || 0;
-    const progBars = Math.round(prog / 5);
-    const progressBar = '█'.repeat(progBars) + '░'.repeat(20 - progBars);
-    children.push(
-      new d.Paragraph({
-        children: [
-          new d.TextRun({ text: `Progresso: `, bold:true, size:20, color:c.navy, font:'Calibri' }),
-          new d.TextRun({ text: `${progressBar}  ${prog}%`, size:18, color: prog === 100 ? '28A745' : prog > 0 ? 'F9A825' : c.gray3, font:'Courier New' }),
-        ],
-        spacing: { before: 120, after: 160 },
-      }),
-    );
-
     children.push(docxSectionTitle('Dados do Servidor'));
     children.push(docxField('Nome',    user ? user.nome  : '—'));
     children.push(docxField('CPF',     user ? user.cpf   : '—'));
@@ -5478,48 +6494,86 @@ async function exportPDIDOCX(btn) {
     children.push(docxField('Nível de Acesso', user ? user.acesso : '—'));
 
     children.push(docxSectionTitle('Dados do Plano'));
-    children.push(docxField('Trilha Vinculada', trilha ? trilha.nome : 'Nenhuma'));
-    children.push(docxField('Nível da Trilha',  trilha ? (trilha.nivel || '—') : '—'));
-    children.push(docxField('Eixo Funcional',   trilha ? (trilha.eixo_funcional || '—') : '—'));
-    children.push(docxField('Status',           p.status || '—'));
-    children.push(docxField('Progresso',        `${prog}%`));
+    if (acao) {
+      children.push(docxField('Ação educativa', acao.nome || '—'));
+      children.push(docxField('Código',          acao.codigo || '—'));
+      children.push(docxField('Modalidade',      acao.modalidade || '—'));
+      children.push(docxField('Carga horária',   `${acao.carga_horaria || 0}h`));
+    } else if (legado && trilha) {
+      children.push(docxField('Trilha (formato antigo)', trilha.nome || '—'));
+      children.push(docxField('Nível da Trilha', trilha.nivel || '—'));
+      children.push(docxField('Eixo Funcional', trilha.eixo_funcional || '—'));
+    } else {
+      children.push(docxField('Ação educativa', '—'));
+    }
     children.push(docxField('Data de Início',   p.data_inicio ? new Date(p.data_inicio).toLocaleDateString('pt-BR') : '—'));
     children.push(docxField('Data Meta',        p.data_meta   ? new Date(p.data_meta).toLocaleDateString('pt-BR')   : '—'));
 
-    // Ações da trilha com status
-    if (trilha && (trilha.acoes_vinculadas || []).length > 0) {
-      children.push(docxSectionTitle('Ações da Trilha e Status'));
+    const pb = p.plano_bloco1;
+    if (pb && typeof pb === 'object') {
+      children.push(docxSectionTitle('Bloco 1 — Identificação da Ação Educativa (questionário)'));
+      children.push(docxField('Título da ação educativa', pb.titulo_acao || '—'));
+      children.push(docxField('Público-alvo', (pb.publico_alvo || '—') + (pb.publico_alvo === 'Outros' && pb.publico_alvo_outros ? ` — ${pb.publico_alvo_outros}` : '')));
+      children.push(docxField('Observações / descrição', pb.observacoes || '—'));
+      children.push(docxField('Objetivo geral', pb.objetivo_geral || '—'));
+      children.push(docxField('Tipo da ação', (pb.tipo_acao || '—') + (pb.tipo_acao === 'Outra' && pb.tipo_acao_outra ? ` (${pb.tipo_acao_outra})` : '')));
+      children.push(docxField('Modalidade (plano)', pb.modalidade || '—'));
+      children.push(docxField('Carga horária total (h)', pb.carga_horaria_total != null ? String(pb.carga_horaria_total) : '—'));
+      children.push(docxField('Período — início', pb.periodo_inicio ? new Date(pb.periodo_inicio).toLocaleDateString('pt-BR') : '—'));
+      children.push(docxField('Período — fim', pb.periodo_fim ? new Date(pb.periodo_fim).toLocaleDateString('pt-BR') : '—'));
+      children.push(docxField('Unidade promotora / Escola', pb.unidade_promotora || '—'));
+      children.push(docxField('Coordenadores(as) / Instrutores(as) responsáveis pela Ação Educativa', pb.coordenadores_instrutores || '—'));
+    }
 
+    const p2 = p.plano_bloco2;
+    if (p2 && typeof p2 === 'object') {
+      children.push(docxSectionTitle('Bloco 2 — Design de Competências MCN-SPB 2026'));
+      children.push(docxField('10. Categoria de Competência', p2.categoria_competencia_mcn || '—'));
+      children.push(docxField('11. Subcategoria de Competência', p2.subcategoria_competencia_mcn || '—'));
+      children.push(docxField('12. Eixo de Competência', p2.eixo_competencia_mcn || '—'));
+      children.push(docxField('13. Unidade Temática', p2.unidade_tematica_mcn || '—'));
+      children.push(docxField('14. Conhecimentos Críticos Trabalhados', p2.conhecimento_critico_mcn || '—'));
+      children.push(docxField('15. Justificativa', p2.justificativa_design || '—'));
+    }
+
+    const p3 = p.plano_bloco3;
+    if (p3 && typeof p3 === 'object') {
+      children.push(docxSectionTitle('Bloco 3 — Design da Ação Educativa MCN—2026-SPB'));
+      children.push(docxField('16. Metodologias e Estratégias de ensino-aprendizagem', ''));
+      children.push(docxText(p3.metodologias_estrategias));
+      children.push(docxField('17. Recursos humanos, tecnológicos e materiais', ''));
+      children.push(docxText(p3.recursos_humanos_tecnologicos_materiais));
+      children.push(docxField('18. Avaliação da Aprendizagem e transferência para a prática', ''));
+      children.push(docxText(p3.avaliacao_aprendizagem_transferencia));
+      children.push(docxField('19. Referências e Curadoria de Conhecimento', ''));
+      children.push(docxText(p3.referencias_curadoria));
+    }
+
+    if (legado && trilha && (trilha.acoes_vinculadas || []).length > 0) {
+      children.push(docxSectionTitle('Ações da trilha (formato legado)'));
       trilha.acoes_vinculadas.forEach((aid, ai) => {
-        const acao  = acoes.find(x => idEquals(x.id, aid));
-        const feito = (p.acoes_status || {})[aid] === true;
-        if (!acao) return;
+        const a = acoes.find(x => idEquals(x.id, aid));
+        if (!a) return;
         children.push(
           new d.Paragraph({
             children: [
-              new d.TextRun({ text: feito ? '✔ ' : '○ ', size:20, color: feito ? '28A745' : c.gray3, font:'Calibri' }),
-              new d.TextRun({ text: `${ai+1}. ${acao.nome}`, bold: feito, size:20, color: feito ? '28A745' : c.dark, font:'Calibri', strike: false }),
-              new d.TextRun({ text: `  (${acao.modalidade || '—'} • ${acao.carga_horaria || 0}h)`, size:18, color:c.gray3, italics:true, font:'Calibri' }),
+              new d.TextRun({ text: `${ai + 1}. ${a.nome}`, size: 20, color: c.dark, font: 'Calibri' }),
+              new d.TextRun({ text: `  (${a.modalidade || '—'} • ${a.carga_horaria || 0}h)`, size: 18, color: c.gray3, italics: true, font: 'Calibri' }),
             ],
             spacing: { before: 80, after: 80 },
             indent: { left: 200 },
           }),
         );
       });
-
       const totalHoras = trilha.acoes_vinculadas.reduce((sum, aid) => {
-        const a = acoes.find(x => idEquals(x.id, aid)); return sum + (a ? (a.carga_horaria||0) : 0);
+        const a = acoes.find(x => idEquals(x.id, aid)); return sum + (a ? (a.carga_horaria || 0) : 0);
       }, 0);
-      const horasConcluidas = trilha.acoes_vinculadas
-        .filter(aid => (p.acoes_status||{})[aid])
-        .reduce((sum, aid) => { const a = acoes.find(x => idEquals(x.id, aid)); return sum + (a ? (a.carga_horaria||0) : 0); }, 0);
-
       children.push(docxDivider());
       children.push(
         new d.Paragraph({
           children: [
-            new d.TextRun({ text: `Carga horária concluída: `, bold:true, size:20, color:c.navy, font:'Calibri' }),
-            new d.TextRun({ text: `${horasConcluidas}h / ${totalHoras}h`, size:20, color:c.dark, font:'Calibri' }),
+            new d.TextRun({ text: `Carga horária total (trilha): `, bold: true, size: 20, color: c.navy, font: 'Calibri' }),
+            new d.TextRun({ text: `${totalHoras}h`, size: 20, color: c.dark, font: 'Calibri' }),
           ],
           spacing: { before: 80, after: 40 },
         }),
@@ -5532,10 +6586,12 @@ async function exportPDIDOCX(btn) {
       properties: { page: { margin: { top: 800, right: 900, bottom: 800, left: 900 } } },
       children,
     }
-  ], `ESPEN_PLANO_ENSINO_${new Date().toISOString().slice(0,10)}.docx`);
+  ], pdis.length === 1
+    ? `ESPEN_plano_ensino_${new Date().toISOString().slice(0, 10)}.docx`
+    : `ESPEN_PLANO_ENSINO_${new Date().toISOString().slice(0, 10)}.docx`);
 
-  if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-file-word"></i> <span class="btn-label">DOCX</span>'; }
-  showToast(`DOCX gerado com ${pdis.length} plano(s) de ensino!`, 'success');
+  resetBtn();
+  showToast(pdis.length === 1 ? 'DOCX do plano gerado!' : `DOCX gerado com ${pdis.length} plano(s) de ensino!`, 'success');
 }
 
 // ================================================================
