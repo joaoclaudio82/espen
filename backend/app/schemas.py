@@ -17,6 +17,16 @@ class UserOut(BaseModel):
     data_registro: datetime
 
 
+class UserDirectoryEntry(BaseModel):
+    """Dados mínimos para exibição (ex.: autor do plano de ensino) — qualquer usuário autenticado."""
+
+    id: str
+    nome: str
+    cargo: str | None = None
+    acesso: Literal["Administrador", "Gestor", "Usuário"]
+    ativo: bool
+
+
 class UserCreate(BaseModel):
     cpf: str = Field(min_length=11, max_length=14)
     nome: str

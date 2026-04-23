@@ -3,15 +3,30 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
-from ..crud import list_users, role_from_acesso, to_user_out
+from ..crud import acesso_from_role, list_users, role_from_acesso, to_user_out
 from ..database import get_db
 from ..deps import get_current_user, require_admin
 from ..models import User
-from ..schemas import PasswordChange, UserCreate, UserOut, UserUpdate
+from ..schemas import PasswordChange, UserCreate, UserDirectoryEntry, UserOut, UserUpdate
 from ..security import hash_password, verify_password
 
 
 router = APIRouter(prefix="/api/users", tags=["users"])
+
+
+@router.get("/directory", response_model=list[UserDirectoryEntry])
+def get_users_directory(_: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Lista id/nome/acesso para resolução de autores (planos de ensino, etc.) sem expor e-mail/CPF."""
+    return [
+        UserDirectoryEntry(
+            id=u.id,
+            nome=u.nome,
+            cargo=u.cargo,
+            acesso=acesso_from_role(u.role),
+            ativo=u.ativo,
+        )
+        for u in list_users(db)
+    ]
 
 
 @router.get("", response_model=list[UserOut])
