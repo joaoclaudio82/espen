@@ -1879,7 +1879,59 @@ function moderacaoFmtDiffVal(v) {
   return s.length > 2500 ? `${s.slice(0, 2500)}… (truncado)` : s;
 }
 
-function moderacaoPdiBlockTable(title, obj) {
+/** Rótulos iguais ao questionário do plano (moderação / “ver alterações”). */
+const PDI_MODERACAO_LABELS_B1 = {
+  titulo_acao: 'Título da Ação Educativa',
+  publico_alvo: 'Público Alvo',
+  publico_alvo_outros: 'Público Alvo — Outros (especificar)',
+  observacoes: 'Observações/descrição',
+  objetivo_geral: 'Objetivo Geral da Ação Educativa',
+  tipo_acao: 'Tipo da Ação Educativa',
+  tipo_acao_outra: 'Tipo da Ação Educativa — Outra (especificar)',
+  modalidade: 'Modalidade da Ação Educativa',
+  carga_horaria_total: 'Carga Horária Total (hs) da Ação Educativa',
+  periodo_inicio: 'Período de realização — Início',
+  periodo_fim: 'Período de realização — Fim',
+  unidade_promotora: 'Unidade Promotora / Escola do Sistema Penal',
+  coordenadores_instrutores: 'Coordenadores(as) / Instrutores(as) responsáveis pela Ação Educativa',
+};
+const PDI_MODERACAO_LABELS_B2 = {
+  categoria_competencia_mcn: 'Categoria de Competência',
+  subcategoria_competencia_mcn: 'Subcategoria de Competência',
+  eixo_competencia_mcn: 'Eixo de Competência',
+  unidade_tematica_mcn: 'Unidade Temática',
+  conhecimento_critico_mcn: 'Conhecimentos Críticos Trabalhados',
+  justificativa_design: 'Justificativa',
+};
+const PDI_MODERACAO_LABELS_B3 = {
+  metodologias_estrategias: 'Metodologias e Estratégias de ensino-aprendizagem',
+  recursos_humanos_tecnologicos_materiais: 'Recursos humanos, tecnológicos e materiais',
+  avaliacao_aprendizagem_transferencia: 'Avaliação da Aprendizagem e transferência para a prática',
+  referencias_curadoria: 'Referências e Curadoria de Conhecimento',
+};
+const PDI_MODERACAO_LABELS_RAIZ = {
+  id: 'ID do plano',
+  usuario_id: 'Responsável (usuário)',
+  acao_id: 'Ação educativa vinculada',
+  trilha_id: 'Trilha vinculada (modelo anterior)',
+  data_inicio: 'Data de início',
+  data_meta: 'Data fim / meta',
+  data_criacao: 'Data de criação',
+};
+
+function pdiModeracaoLabelForPath(path) {
+  const p = String(path || '').trim();
+  if (!p || p === '(raiz)') return p;
+  let m = /^plano_bloco1\.(.+)$/.exec(p);
+  if (m) return PDI_MODERACAO_LABELS_B1[m[1]] || `Bloco 1 — ${m[1]}`;
+  m = /^plano_bloco2\.(.+)$/.exec(p);
+  if (m) return PDI_MODERACAO_LABELS_B2[m[1]] || `Bloco 2 — ${m[1]}`;
+  m = /^plano_bloco3\.(.+)$/.exec(p);
+  if (m) return PDI_MODERACAO_LABELS_B3[m[1]] || `Bloco 3 — ${m[1]}`;
+  return PDI_MODERACAO_LABELS_RAIZ[p] || p;
+}
+
+function moderacaoPdiBlockTable(title, obj, keyLabels) {
   if (!obj || typeof obj !== 'object') {
     return `<div style="margin-bottom:14px;"><div style="font-weight:700;font-size:13px;color:var(--navy);margin-bottom:6px;">${escapeHtmlStr(title)}</div><p class="text-muted" style="font-size:12px;margin:0;">—</p></div>`;
   }
@@ -1897,7 +1949,8 @@ function moderacaoPdiBlockTable(title, obj) {
         val = moderacaoValorCampoLegivel(v);
       }
       if (val.length > 6000) val = `${val.slice(0, 6000)}…`;
-      return `<tr><td style="font-weight:600;padding:6px 10px;vertical-align:top;border-bottom:1px solid var(--gray-100);width:32%;">${escapeHtmlStr(k)}</td><td style="padding:6px 10px;font-size:12px;border-bottom:1px solid var(--gray-100);white-space:pre-wrap;word-break:break-word;">${escapeHtmlStr(val)}</td></tr>`;
+      const rowLabel = keyLabels && keyLabels[k] != null && String(keyLabels[k]).trim() !== '' ? keyLabels[k] : k;
+      return `<tr><td style="font-weight:600;padding:6px 10px;vertical-align:top;border-bottom:1px solid var(--gray-100);width:32%;">${escapeHtmlStr(rowLabel)}</td><td style="padding:6px 10px;font-size:12px;border-bottom:1px solid var(--gray-100);white-space:pre-wrap;word-break:break-word;">${escapeHtmlStr(val)}</td></tr>`;
     })
     .join('');
   return `<div style="margin-bottom:16px;"><div style="font-weight:700;font-size:13px;color:var(--navy);margin-bottom:6px;">${escapeHtmlStr(title)}</div><table style="width:100%;border-collapse:collapse;border:1px solid var(--gray-200);border-radius:8px;overflow:hidden;">${rows}</table></div>`;
@@ -1924,7 +1977,7 @@ function buildPdiModeracaoDiffBodyHtml(payload) {
       .map(
         (d) => `
       <tr>
-        <td style="vertical-align:top;font-weight:600;font-size:12px;color:var(--navy);padding:8px;border-bottom:1px solid var(--gray-100);word-break:break-word;">${escapeHtmlStr(d.path)}</td>
+        <td style="vertical-align:top;font-weight:600;font-size:12px;color:var(--navy);padding:8px;border-bottom:1px solid var(--gray-100);word-break:break-word;">${escapeHtmlStr(pdiModeracaoLabelForPath(d.path))}</td>
         <td style="vertical-align:top;font-size:12px;padding:8px;border-bottom:1px solid var(--gray-100);background:#fff5f5;max-width:36%;word-break:break-word;"><pre style="margin:0;white-space:pre-wrap;font-family:ui-monospace,Menlo,monospace;font-size:11px;">${escapeHtmlStr(moderacaoFmtDiffVal(d.antes))}</pre></td>
         <td style="vertical-align:top;font-size:12px;padding:8px;border-bottom:1px solid var(--gray-100);background:#f0fdf4;max-width:36%;word-break:break-word;"><pre style="margin:0;white-space:pre-wrap;font-family:ui-monospace,Menlo,monospace;font-size:11px;">${escapeHtmlStr(moderacaoFmtDiffVal(d.depois))}</pre></td>
       </tr>`
@@ -1943,22 +1996,11 @@ function buildPdiModeracaoDiffBodyHtml(payload) {
       </div>`;
   }
   const regNovo = pdiNormalizePersistido(reg);
-  const metaRowsHtml = ['usuario_id', 'acao_id', 'data_inicio', 'data_meta', 'data_criacao']
-    .filter((k) => regNovo[k] != null && String(regNovo[k]).trim() !== '')
-    .map(
-      (k) =>
-        `<tr><td style="font-weight:600;padding:6px 10px;border-bottom:1px solid var(--gray-100);">${escapeHtmlStr(k)}</td><td style="padding:6px 10px;font-size:12px;border-bottom:1px solid var(--gray-100);">${escapeHtmlStr(moderacaoValorCampoLegivel(regNovo[k]))}</td></tr>`
-    )
-    .join('');
-  const metaHtml = metaRowsHtml
-    ? `<div style="margin-bottom:14px;"><div style="font-weight:700;font-size:13px;color:var(--navy);margin-bottom:6px;">Metadados</div><table style="width:100%;border-collapse:collapse;border:1px solid var(--gray-200);border-radius:8px;">${metaRowsHtml}</table></div>`
-    : '';
   return `<p style="font-size:13px;margin:0 0 10px;line-height:1.45;"><strong>Novo plano</strong> — conteúdo que será gravado se você aprovar.</p>
     <div style="max-height:58vh;overflow:auto;padding-right:4px;">
-      ${metaHtml}
-      ${moderacaoPdiBlockTable('Bloco 1 — Identificação da ação educativa', regNovo.plano_bloco1)}
-      ${moderacaoPdiBlockTable('Bloco 2 — Design de competências (MCN)', regNovo.plano_bloco2)}
-      ${moderacaoPdiBlockTable('Bloco 3 — Design da ação educativa', regNovo.plano_bloco3)}
+      ${moderacaoPdiBlockTable('Bloco 1 — Identificação da ação educativa', regNovo.plano_bloco1, PDI_MODERACAO_LABELS_B1)}
+      ${moderacaoPdiBlockTable('Bloco 2 — Design de competências (MCN)', regNovo.plano_bloco2, PDI_MODERACAO_LABELS_B2)}
+      ${moderacaoPdiBlockTable('Bloco 3 — Design da ação educativa', regNovo.plano_bloco3, PDI_MODERACAO_LABELS_B3)}
     </div>`;
 }
 
@@ -3580,9 +3622,8 @@ function renderMatriz() {
       <div class="filter-group" style="min-width:180px;">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
           <input type="checkbox" ${matrizFilters.mostrarArquivados ? 'checked' : ''} onchange="matrizFilters.mostrarArquivados=this.checked;matrizPage=1;renderMatrizTable()" style="width:16px;height:16px;">
-          Ver arquivadas
+          Arquivadas
         </label>
-        <span style="font-size:11px;color:var(--gray-500);line-height:1.3;">Exclusões viram arquivamento (histórico preservado).</span>
       </div>
       <button class="btn btn-secondary btn-sm" onclick="resetMatrizFilters()"><i class="fas fa-times"></i> Limpar</button>
     </div>
@@ -3613,8 +3654,10 @@ function isMatrizRegistroArquivado(r) {
 
 function getFilteredMatriz() {
   let data = getStorage(STORAGE_KEYS.matriz) || [];
-  if (!matrizFilters.mostrarArquivados) {
-    data = data.filter(r => !isMatrizRegistroArquivado(r));
+  if (matrizFilters.mostrarArquivados) {
+    data = data.filter((r) => isMatrizRegistroArquivado(r));
+  } else {
+    data = data.filter((r) => !isMatrizRegistroArquivado(r));
   }
   const { search, categoria, cargo, eixo, complexidade, matriz, subcategoria } = matrizFilters;
   if (search) {
