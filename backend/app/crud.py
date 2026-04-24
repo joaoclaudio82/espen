@@ -107,3 +107,12 @@ def clear_storage(db: Session, key: str) -> None:
         return
     db.query(table).delete()
     db.commit()
+
+
+def append_moderacao_item(db: Session, item: dict) -> None:
+    """Insere um único item na fila de moderação sem apagar os existentes."""
+    row = dict(item)
+    item_id = row.get("id") or str(uuid.uuid4())
+    row["id"] = item_id
+    db.add(ModeracaoItem(id=item_id, data=row))
+    db.commit()

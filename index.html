@@ -1033,6 +1033,9 @@ textarea.field-sugerido, input.field-sugerido { border-color: #e65100 !important
         <div class="nav-item" id="nav-moderacao" style="display:none;" onclick="navigate('moderacao')">
           <i class="fas fa-clipboard-check"></i><span>Aprovações</span><span id="nav-moderacao-count" class="badge badge-orange" style="display:none;font-size:10px;vertical-align:middle;margin-left:6px;padding:2px 6px;">0</span>
         </div>
+        <div class="nav-item" id="nav-pendencias-gestor" style="display:none;" onclick="navigate('pendencias_gestor')">
+          <i class="fas fa-hourglass-half"></i><span>Pendências em validação</span><span id="nav-pendencias-gestor-count" class="badge badge-orange" style="display:none;font-size:10px;vertical-align:middle;margin-left:6px;padding:2px 6px;">0</span>
+        </div>
         <div class="nav-item" onclick="navigate('configuracoes')">
           <i class="fas fa-gear"></i><span>Configurações</span>
         </div>
@@ -1609,17 +1612,30 @@ function usaFilaModeracao() {
 }
 
 function pushFilaModeracao(tipo, payload) {
-  const q = getStorage(STORAGE_KEYS.moderacao) || [];
-  q.push({
+  const newItem = {
     id: genId(),
     tipo,
     payload,
     solicitante_id: currentUser.id,
     solicitante_nome: currentUser.nome,
     criado_em: new Date().toISOString(),
-  });
+  };
+  if (authToken && !isAdminUser() && !isSomenteLeitura()) {
+    try {
+      apiRequest('POST', `/storage/${STORAGE_KEYS.moderacao}/append`, { item: newItem });
+      invalidateStorageCacheKey(STORAGE_KEYS.moderacao);
+      if (typeof updateModeracaoNavBadge === 'function') updateModeracaoNavBadge();
+      if (typeof updateGestorPendenciasNavBadge === 'function') updateGestorPendenciasNavBadge();
+      return;
+    } catch (e) {
+      console.warn('Falha ao enfileirar via API (append), usando fluxo local:', e && e.message ? e.message : e);
+    }
+  }
+  const q = getStorage(STORAGE_KEYS.moderacao) || [];
+  q.push(newItem);
   setStorage(STORAGE_KEYS.moderacao, q);
   if (typeof updateModeracaoNavBadge === 'function') updateModeracaoNavBadge();
+  if (typeof updateGestorPendenciasNavBadge === 'function') updateGestorPendenciasNavBadge();
 }
 
 function escapeHtmlStr(s) {
@@ -2128,6 +2144,16 @@ function updateModeracaoNavBadge() {
   badge.style.display = n > 0 ? 'inline-block' : 'none';
 }
 
+function updateGestorPendenciasNavBadge() {
+  const badge = document.getElementById('nav-pendencias-gestor-count');
+  const nav = document.getElementById('nav-pendencias-gestor');
+  if (!badge || !nav || !currentUser || currentUser.acesso !== 'Gestor') return;
+  invalidateStorageCacheKey(STORAGE_KEYS.moderacao);
+  const n = (getStorage(STORAGE_KEYS.moderacao) || []).length;
+  badge.textContent = String(n);
+  badge.style.display = n > 0 ? 'inline-block' : 'none';
+}
+
 /** Invalida cache local para forçar leitura fresca da API na próxima leitura. */
 function invalidateStorageCacheKey(key) {
   if (typeof remoteCache !== 'undefined') delete remoteCache[key];
@@ -2494,6 +2520,7 @@ function enterApp() {
   // Hide users nav if not admin
   const navUsuarios = document.getElementById('nav-usuarios');
   const navModeracao = document.getElementById('nav-moderacao');
+  const navPendGestor = document.getElementById('nav-pendencias-gestor');
   if (currentUser.acesso !== 'Administrador') {
     if (navUsuarios) navUsuarios.style.display = 'none';
     if (navModeracao) navModeracao.style.display = 'none';
@@ -2501,6 +2528,12 @@ function enterApp() {
     if (navUsuarios) navUsuarios.style.display = 'flex';
     if (navModeracao) navModeracao.style.display = 'flex';
     updateModeracaoNavBadge();
+  }
+  if (currentUser.acesso === 'Gestor') {
+    if (navPendGestor) navPendGestor.style.display = 'flex';
+    updateGestorPendenciasNavBadge();
+  } else if (navPendGestor) {
+    navPendGestor.style.display = 'none';
   }
 
   navigate('dashboard');
@@ -2567,6 +2600,7 @@ const pageMap = {
   pdi: { title: 'Planos de Ensino', icon: 'fa-clipboard-list' },
   usuarios: { title: 'Gestão de Usuários', icon: 'fa-users' },
   moderacao: { title: 'Aprovações de alterações', icon: 'fa-clipboard-check' },
+  pendencias_gestor: { title: 'Pendências em validação', icon: 'fa-hourglass-half' },
   sobre: { title: 'Sobre', icon: 'fa-circle-info' },
   configuracoes: { title: 'Configurações', icon: 'fa-gear' },
 };
@@ -2656,6 +2690,7 @@ function navigate(page) {
       case 'pdi': renderPDI(); break;
       case 'usuarios': renderUsuarios(); break;
       case 'moderacao': renderModeracao(); break;
+      case 'pendencias_gestor': renderPendenciasGestorModeracao(); break;
       case 'sobre': renderSobre(); break;
       case 'configuracoes': renderConfiguracoes(); break;
       default: content.innerHTML = '<div class="empty-state"><i class="fas fa-tools"></i><h3>Em desenvolvimento</h3></div>';
@@ -3532,6 +3567,8 @@ let matrizPage = 1;
 const matrizPerPage = 15;
 let moderacaoHistoricoPage = 1;
 const moderacaoHistoricoPerPage = 15;
+let gestorModeracaoHistoricoPage = 1;
+const gestorModeracaoHistoricoPerPage = 15;
 let matrizFilters = { search: '', categoria: '', cargo: '', eixo: '', unidade: '', complexidade: '', matriz: '', subcategoria: '', mostrarArquivados: false };
 let matrizSort = { field: '', dir: 'asc' };
 
@@ -5907,6 +5944,173 @@ function renderModeracao() {
     </div>
   `;
   renderModeracaoHistoricoTable();
+}
+
+function renderGestorPendenciasHistoricoTable() {
+  const wrap = document.getElementById('gestor-moderacao-historico-content');
+  const sub = document.getElementById('gestor-moderacao-historico-sub');
+  if (!wrap) return;
+  invalidateStorageCacheKey(STORAGE_KEYS.moderacao_historico);
+  const historico = [...(getStorage(STORAGE_KEYS.moderacao_historico) || [])].sort((a, b) => {
+    const ta = new Date(a.decidido_em || a.solicitada_em || 0).getTime();
+    const tb = new Date(b.decidido_em || b.solicitada_em || 0).getTime();
+    return tb - ta;
+  });
+  const total = historico.length;
+  if (sub) {
+    sub.textContent =
+      total === 0
+        ? 'Nenhuma decisão registrada ainda sobre as suas solicitações.'
+        : `${total} decisão(ões) · do mais recente ao mais antigo · ${gestorModeracaoHistoricoPerPage} por página`;
+  }
+  if (total === 0) {
+    wrap.innerHTML = `
+      <div class="table-responsive">
+        <table>
+          <thead>
+            <tr>
+              <th>Decidido em</th>
+              <th>Situação</th>
+              <th>Tipo</th>
+              <th>Resumo</th>
+              <th>Decidido por</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td colspan="5" style="padding:24px;text-align:center;color:var(--gray-500);">Nenhuma decisão registrada ainda.</td></tr>
+          </tbody>
+        </table>
+      </div>`;
+    return;
+  }
+  const totalPages = Math.ceil(total / gestorModeracaoHistoricoPerPage);
+  if (gestorModeracaoHistoricoPage > totalPages) gestorModeracaoHistoricoPage = totalPages;
+  if (gestorModeracaoHistoricoPage < 1) gestorModeracaoHistoricoPage = 1;
+  const start = (gestorModeracaoHistoricoPage - 1) * gestorModeracaoHistoricoPerPage;
+  const page = historico.slice(start, start + gestorModeracaoHistoricoPerPage);
+  const historicoRows = page
+    .map((h) => {
+      const st = h.status === 'aprovado' ? 'green' : 'red';
+      const stLabel = h.status === 'aprovado' ? 'Aprovado' : 'Recusado';
+      const nomeDec = escapeHtmlStr(h.decidido_por_nome || '—');
+      const tipoLabelEsc = escapeHtmlStr(getModeracaoTipoLabel(h.tipo));
+      const resumoEsc = escapeHtmlStr(getModeracaoResumo({ tipo: h.tipo, payload: h.payload }));
+      const motivo = h.motivo_rejeicao
+        ? `<div style="font-size:11px;color:var(--gray-600);margin-top:4px;">Motivo: ${escapeHtmlStr(h.motivo_rejeicao)}</div>`
+        : '';
+      const hid = String(h.id).replace(/'/g, "\\'");
+      return `
+      <tr onclick="verDetalheModeracaoHistorico('${hid}')" style="cursor:pointer;">
+        <td style="font-size:12px;white-space:nowrap;">${h.decidido_em ? new Date(h.decidido_em).toLocaleString('pt-BR') : '—'}</td>
+        <td><span class="badge badge-${st}">${stLabel}</span></td>
+        <td><span class="badge badge-gray">${tipoLabelEsc}</span></td>
+        <td style="font-size:13px;max-width:380px;line-height:1.45;">${resumoEsc}${motivo}</td>
+        <td style="font-size:13px;">${nomeDec}</td>
+      </tr>`;
+    })
+    .join('');
+  wrap.innerHTML = `
+    <div class="table-responsive">
+      <table>
+        <thead>
+          <tr>
+            <th>Decidido em</th>
+            <th>Situação</th>
+            <th>Tipo</th>
+            <th>Resumo</th>
+            <th>Decidido por</th>
+          </tr>
+        </thead>
+        <tbody>${historicoRows}</tbody>
+      </table>
+    </div>
+    <div class="table-footer">
+      <div class="page-info">Exibindo ${start + 1}–${Math.min(start + gestorModeracaoHistoricoPerPage, total)} de <strong>${total}</strong> registros</div>
+      <div class="pagination">
+        <button class="page-btn" onclick="gestorModeracaoHistoricoPage=Math.max(1,gestorModeracaoHistoricoPage-1);renderGestorPendenciasHistoricoTable()" ${gestorModeracaoHistoricoPage <= 1 ? 'disabled' : ''}><i class="fas fa-chevron-left"></i></button>
+        ${getPaginationButtons(gestorModeracaoHistoricoPage, totalPages, 'gestorModeracaoHistoricoPage', 'renderGestorPendenciasHistoricoTable()')}
+        <button class="page-btn" onclick="gestorModeracaoHistoricoPage=Math.min(${totalPages},gestorModeracaoHistoricoPage+1);renderGestorPendenciasHistoricoTable()" ${gestorModeracaoHistoricoPage >= totalPages ? 'disabled' : ''}><i class="fas fa-chevron-right"></i></button>
+      </div>
+    </div>
+  `;
+}
+
+function renderPendenciasGestorModeracao() {
+  if (currentUser.acesso !== 'Gestor') {
+    document.getElementById('page-content').innerHTML = `<div class="empty-state"><i class="fas fa-lock"></i><h3>Acesso restrito</h3><p>Esta área é exclusiva do perfil gestor.</p></div>`;
+    return;
+  }
+  document.getElementById('topbar-actions').innerHTML = '';
+  invalidateStorageCacheKey(STORAGE_KEYS.moderacao);
+  invalidateStorageCacheKey(STORAGE_KEYS.moderacao_historico);
+  updateGestorPendenciasNavBadge();
+
+  const fila = getStorage(STORAGE_KEYS.moderacao) || [];
+  const pendentesRows = fila.length
+    ? fila
+        .map((it) => {
+          const resumoEsc = escapeHtmlStr(getModeracaoResumo(it));
+          const tipoLabelEsc = escapeHtmlStr(getModeracaoTipoLabel(it.tipo));
+          const btnDiff =
+            it.tipo === 'pdi_upsert'
+              ? `<div style="margin-top:8px;"><button type="button" class="btn btn-secondary btn-sm" onclick='openModeracaoPdiDiffPopup(${JSON.stringify(String(it.id))})' title="Ver alterações propostas"><i class="fas fa-code-compare"></i> Ver alterações propostas</button></div>`
+              : it.tipo === 'matriz_upsert'
+                ? `<div style="margin-top:8px;"><button type="button" class="btn btn-secondary btn-sm" onclick='openModeracaoMatrizDiffPopup(${JSON.stringify(String(it.id))})' title="Ver alterações propostas"><i class="fas fa-code-compare"></i> Ver alterações propostas</button></div>`
+                : '';
+          const mid = JSON.stringify(String(it.id));
+          return `
+          <tr>
+            <td style="font-size:12px;white-space:nowrap;">${new Date(it.criado_em).toLocaleString('pt-BR')}</td>
+            <td><span class="badge badge-orange">${tipoLabelEsc}</span></td>
+            <td><span class="badge badge-gray">Aguardando decisão</span></td>
+            <td style="font-size:13px;max-width:460px;line-height:1.45;"><div>${resumoEsc}</div>${btnDiff}</td>
+            <td style="white-space:nowrap;">
+              <button type="button" class="btn btn-secondary btn-sm" onclick='verDetalheModeracaoPendente(${mid})'>Detalhe</button>
+            </td>
+          </tr>`;
+        })
+        .join('')
+    : `<tr><td colspan="5" style="padding:24px;text-align:center;color:var(--gray-500);">Nenhuma solicitação sua aguardando validação do administrador.</td></tr>`;
+
+  gestorModeracaoHistoricoPage = 1;
+  document.getElementById('page-content').innerHTML = `
+    <div class="section-header">
+      <div>
+        <div class="section-title">Pendências em validação</div>
+        <div class="section-sub">Solicitações que você enviou para aprovação do administrador e o histórico de decisões já tomadas.</div>
+      </div>
+    </div>
+
+    <div class="table-card" style="margin-bottom:20px;">
+      <div style="padding:16px 20px;border-bottom:1px solid var(--gray-100);">
+        <div class="section-title" style="font-size:16px;">Aguardando o administrador</div>
+        <div class="section-sub">${fila.length} solicitação(ões) pendente(s)</div>
+      </div>
+      <div class="table-responsive">
+        <table>
+          <thead>
+            <tr>
+              <th>Enviada em</th>
+              <th>Tipo</th>
+              <th>Situação</th>
+              <th>Resumo</th>
+              <th style="min-width:120px;">Ações</th>
+            </tr>
+          </thead>
+          <tbody>${pendentesRows}</tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="table-card">
+      <div style="padding:16px 20px;border-bottom:1px solid var(--gray-100);">
+        <div class="section-title" style="font-size:16px;">Histórico (decididas)</div>
+        <div class="section-sub" id="gestor-moderacao-historico-sub">Carregando…</div>
+      </div>
+      <div id="gestor-moderacao-historico-content"></div>
+    </div>
+  `;
+  renderGestorPendenciasHistoricoTable();
 }
 
 // ================================================================

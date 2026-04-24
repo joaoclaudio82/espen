@@ -89,3 +89,9 @@ class PasswordChange(BaseModel):
 
 class BulkPayload(BaseModel):
     items: list[dict[str, Any]]
+
+
+class ModeracaoAppendPayload(BaseModel):
+    """Um item a acrescentar na fila de moderação (evita GET filtrado + PUT que apagaria outros itens)."""
+
+    item: dict[str, Any]
