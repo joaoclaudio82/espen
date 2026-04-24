@@ -3477,14 +3477,20 @@ function renderDashboard() {
       });
     }
 
-    // Chart: Complexidade
+    // Chart: Complexidade (valores além de Básico/Intermediário/Avançado recebem cores cíclicas)
     const ctxComp = document.getElementById('chart-complexidade');
     if (ctxComp) {
+      const compKeys = Object.keys(complexCounts);
+      const compPalette = ['#28a745', '#ffc107', '#1a237e', '#6c757d', '#17a2b8', '#6610f2', '#e83e8c', '#20c997'];
       charts.complexidade = new Chart(ctxComp, {
         type: 'pie',
         data: {
-          labels: Object.keys(complexCounts),
-          datasets: [{ data: Object.values(complexCounts), backgroundColor: ['#28a745', '#ffc107', '#1a237e'], borderWidth: 2 }]
+          labels: compKeys,
+          datasets: [{
+            data: Object.values(complexCounts),
+            backgroundColor: compKeys.map((_, i) => compPalette[i % compPalette.length]),
+            borderWidth: 2,
+          }],
         },
         options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { font: { size: 11 } } } } }
       });
@@ -3503,10 +3509,11 @@ function renderDashboard() {
       });
     }
 
-    // Chart: Cargo
+    // Chart: Cargo (rótulos só truncados quando longos; antes havia "…" em todos)
     const ctxCargo = document.getElementById('chart-cargo');
     if (ctxCargo) {
-      const cargoLabels = Object.keys(cargoCounts).map(c => c.split(' ').slice(0, 3).join(' ') + '…');
+      const cargoKeys = Object.keys(cargoCounts);
+      const cargoLabels = cargoKeys.map((c) => (c.length > 36 ? `${c.substring(0, 34)}…` : c));
       charts.cargo = new Chart(ctxCargo, {
         type: 'bar',
         data: {
@@ -3534,11 +3541,18 @@ function renderDashboard() {
     const activityEl = document.getElementById('recent-activity');
     if (activityEl) {
       if (!filteredAcoes.length) {
+        const emptyTitle = dashSel.mode === 'none' ? 'Escopo vazio' : !acoes.length ? 'Nenhuma ação cadastrada' : 'Nenhuma ação no painel';
+        const emptyBody =
+          dashSel.mode === 'none'
+            ? 'Foi salvo um filtro sem nenhuma ação: marque as desejadas e salve de novo, ou use Limpar para voltar ao panorama completo da matriz.'
+            : !acoes.length
+              ? 'Cadastre ações educativas para poder filtrá-las aqui.'
+              : 'Marque uma ou mais ações no filtro acima e clique em Salvar Filtro.';
         activityEl.innerHTML = `
           <div class="empty-state" style="padding:26px 20px;">
             <i class="fas fa-book-open"></i>
-            <h3>Nenhuma ação selecionada</h3>
-            <p>Use o filtro acima para definir as ações que devem aparecer no dashboard.</p>
+            <h3>${emptyTitle}</h3>
+            <p>${emptyBody}</p>
           </div>
         `;
         return;
@@ -3710,6 +3724,14 @@ function getFilteredMatriz() {
   return data;
 }
 
+/** Rótulo na tabela da matriz: reticências só quando o texto passa de maxLen (conteúdo escapado para HTML). */
+function matrizCellShortLabel(raw, maxLen) {
+  const t = String(raw ?? '').trim();
+  if (!t) return '—';
+  if (t.length <= maxLen) return escapeHtmlStr(t);
+  return `${escapeHtmlStr(t.substring(0, maxLen - 1))}…`;
+}
+
 function renderMatrizTable() {
   const wrap = document.getElementById('matriz-table-content');
   if (!wrap) return;
@@ -3759,8 +3781,8 @@ function renderMatrizTable() {
             </div>
           </td>
           <td class="hide-mobile"><span class="badge badge-${nc}">${r.categoria||'—'}</span></td>
-          <td class="hide-mobile" style="font-size:12px;max-width:150px;" title="${r.cargo||''}">${(r.cargo||'—').split(' ').slice(0,3).join(' ')}…</td>
-          <td class="hide-mobile" style="font-size:12px;max-width:140px;" title="${r.eixo||''}">${r.eixo ? r.eixo.substring(0,30)+'…' : '—'}</td>
+          <td class="hide-mobile" style="font-size:12px;max-width:150px;" title="${escapeHtmlStr(r.cargo || '')}">${matrizCellShortLabel(r.cargo, 36)}</td>
+          <td class="hide-mobile" style="font-size:12px;max-width:140px;" title="${escapeHtmlStr(r.eixo || '')}">${matrizCellShortLabel(r.eixo, 30)}</td>
           <td class="hide-mobile" style="font-size:12px;max-width:160px;" title="${r.conhecimento||''}">${(r.conhecimento||'—').substring(0,35)}${r.conhecimento&&r.conhecimento.length>35?'…':''}</td>
           <td><span class="badge badge-${cc}">${r.tipologia_complexidade||'—'}</span></td>
           <td class="hide-mobile"><span class="badge badge-purple">${r.matriz||'—'}</span></td>
