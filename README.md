@@ -1,151 +1,122 @@
-![1774975498338](image/README/1774975498338.png)
----
+# ESPEN — Sistema de Gestão por Competências
 
-## ✅ Funcionalidades Implementadas
+SPA Vanilla JS + FastAPI + PostgreSQL para a Escola Nacional de Serviços Penais (ESPEN/SENAPPEN).
 
-### 🔐 Autenticação
-- Login com CPF + Senha (com hash de segurança)
-- Cadastro de novos usuários com validação de CPF e confirmação de senha
-- Sessão persistente via localStorage
-- Controle de acesso por perfil (Administrador, Gestor, Usuário)
-- Alteração de senha
-
-**Usuário Admin padrão:**
-- CPF: `727.927.369-68`
-- Senha: `admin123`
-
-### 📊 Dashboard
-- KPIs: Competências, Ações Educativas, Trilhas, Usuários
-- Gráficos interativos (Chart.js):
-  - Distribuição por Eixo Funcional
-  - Tipologia de Complexidade (Básico/Intermediário/Avançado)
-  - Categorias (Especialista vs Geral)
-  - Competências por Cargo
-  - Top 8 Unidades Temáticas
-- Feed de atividades recentes
-
-### 📋 Matriz de Competências (MCN 2026)
-- **602 registros** pré-carregados
-- Tabela paginada (15/página) com busca e filtros por:
-  - Categoria, Subcategoria, Cargo, Eixo Funcional, Complexidade, Ano da Matriz
-- Modal de detalhes completo
-- CRUD completo (Admin/Gestor)
-- Exportação para CSV
-
-### 📚 Ações Educativas
-- Formulário com **27 campos** em 4 seções (Identificação, Detalhamento, Operacional, Certificação)
-- **6 cursos pré-carregados**: III Interseccionalidade, VI Fontes Humanas, II Revista Eletrônica, II Políticas Penais, V CAP, II Entrevista
-- Visualização em cards com filtros
-- Modal de detalhes completo
-- CRUD completo (Gestor/Admin)
-
-### 🛤️ Trilhas de Aprendizagem
-- Criação de trilhas vinculando ações educativas
-- Filtros por cargo, eixo, nível
-- Visualização em timeline
-- Carga horária calculada automaticamente
-- CRUD completo
-
-### 📝 Planos de Ensino
-- Vinculação por servidor + trilha
-- Controle de progresso com checkboxes por ação
-- Progresso calculado automaticamente
-- Status automático (Em andamento/Concluído)
-- Datas de início e meta
-
-### 👥 Gestão de Usuários (Admin only)
-- Listagem completa de usuários
-- Cadastro, edição e ativação/desativação
-- Controle de níveis de acesso
-
-### ⚙️ Configurações
-- Perfil do usuário logado
-- Estatísticas do sistema
-- Reinicialização de dados (Admin)
-
----
-
-## 🗂️ Estrutura de Dados (localStorage)
-
-| Chave | Descrição | Volume |
-|-------|-----------|--------|
-| `espen_users` | Usuários do sistema | ~3 iniciais |
-| `espen_session` | Sessão ativa | 1 registro |
-| `espen_matriz` | Matriz de Competências MCN 2026 | 602 registros |
-| `espen_acoes` | Ações Educativas | 6 iniciais |
-| `espen_trilhas` | Trilhas de Aprendizagem | 0 iniciais |
-| `espen_pdi` | Planos de Ensino | 0 iniciais |
-
----
-
-## 📁 Arquivos
+## Estrutura
 
 ```
-index.html    — Aplicação completa (SPA, CSS e JS inline)
-README.md     — Esta documentação
+espen/
+├── backend/                    # FastAPI 0.116 + SQLAlchemy 2 + psycopg3
+│   ├── app/
+│   │   ├── core/              # config, security (PBKDF2 + JWT), CPF, middleware HTTPS
+│   │   ├── db/                # session SQLAlchemy
+│   │   ├── models/            # User, Storage (JSONB blobs), Relations
+│   │   ├── schemas/           # Pydantic — split por agregado
+│   │   ├── repositories/      # Acesso a dados
+│   │   ├── services/          # Regra de negócio (users, seed)
+│   │   ├── api/v1/            # Routers HTTP finos (auth, users, storage, matriz, ...)
+│   │   └── main.py            # App FastAPI + lifespan
+│   ├── alembic/               # Migrations versionadas
+│   ├── tests/                 # pytest (cpf + security)
+│   ├── pyproject.toml         # Deps + ruff + pytest config
+│   └── requirements.txt       # Compat para `pip install -r`
+├── frontend/                   # SPA Vanilla JS bundled com Vite
+│   ├── src/
+│   │   ├── api/               # client HTTP (fetch async) + cache de storage
+│   │   ├── auth/              # crypto (SHA-256), CPF, sessão (login/registro)
+│   │   ├── shared/            # toast, escape, formatadores
+│   │   ├── styles/main.css    # CSS extraído do monólito (~890 linhas, idêntico)
+│   │   ├── legacy.js          # Renderers + lógica de páginas (transição em andamento)
+│   │   └── main.js            # Entry point
+│   ├── public/                # Logos, imagens
+│   ├── index.html             # Shell HTML enxuto
+│   ├── vite.config.js
+│   └── package.json
+├── docker-compose.yml          # PostgreSQL 16 (porta 5433)
+└── templates/                  # XLSX MCN 2026 + Modelo de Plano de Ensino DOCX
 ```
 
----
+## Pré-requisitos
 
-## 🚀 Acesso
+- Python 3.12+
+- Node.js 20+ (npm)
+- Docker (apenas para o PostgreSQL)
 
+## Rodando localmente
 
-criar um ambiente Python virtual antes de testar o backend.
-cd backend
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-copy .env.example .env
-
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8001
-
-
-
-Arquivo único `index.html` — abra diretamente no navegador ou publique via aba **Publish**.
-
-
-
-
-
-
-## 🗄️ Backend FastAPI + PostgreSQL
-
-Agora o projeto também suporta persistência em banco PostgreSQL, com API FastAPI.
-
-### Subir banco
+### 1. Banco de dados
 
 ```bash
 docker compose up -d postgres
 ```
 
-### Rodar API
+### 2. Backend
 
 ```bash
 cd backend
 python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-copy .env.example .env
+source .venv/bin/activate          # no Windows: .\.venv\Scripts\Activate.ps1
+pip install -e .[dev]              # ou: pip install -r requirements.txt
+cp .env.example .env
+
+# Aplica as migrations:
+alembic upgrade head
+
+# Sobe a API:
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8001
 ```
 
-### Rodar frontend
+API disponível em `http://127.0.0.1:8001` — `/api/health`, `/api/auth/login`, etc.
+
+### 3. Frontend
 
 ```bash
-npm run start
+cd frontend
+npm install
+npm run dev
 ```
 
-Com frontend em `http://127.0.0.1:5500` e API em `http://127.0.0.1:8001`, os dados passam a ser persistidos no PostgreSQL via API.
+SPA em `http://127.0.0.1:5173`.
 
----
+### Login padrão
 
-## 🔧 Próximos Passos Sugeridos
+- CPF: `727.927.369-68`
+- Senha: `admin123`
 
-1. **Exportação PDF** de Planos de Ensino e relatórios gerenciais
-2. **Relatório de gap analysis** por servidor (competências requeridas vs desenvolvidas)
-3. **Importação via CSV/Excel** para a Matriz de Competências
-4. **Notificações de prazo** nos Planos de Ensino
-5. **Módulo de avaliação**: aplicar avaliações de aprendizagem pós-ação
-6. **Integração com SIAPE/SOUGOV** para dados de servidores
-7. **Backup/restore** de dados em JSON
-8. **Multitenancy**: suporte a múltiplos estados
+O usuário admin é criado automaticamente no primeiro start da API (vide [`backend/app/services/seed.py`](backend/app/services/seed.py)).
+
+## Build de produção
+
+```bash
+cd frontend
+npm run build              # gera frontend/dist/
+```
+
+Sirva o `dist/` por trás de qualquer servidor estático (nginx, Caddy, S3+CloudFront, etc.). A API
+respeita `X-Forwarded-Proto` para emitir HSTS — basta `FORCE_HTTPS=true` ou rodar em ambiente com
+`RAILWAY_ENVIRONMENT` definido.
+
+## Testes
+
+Backend:
+
+```bash
+cd backend
+pytest
+```
+
+## Funcionalidades
+
+- **Auth:** login JWT (PBKDF2 + SHA-256 hex), registro com aprovação, troca de senha, perfis Admin/Gestor/Usuário
+- **Matriz de Competências:** CRUD, paginação, filtros por categoria/cargo/eixo/complexidade/ano, exportação CSV/DOCX
+- **Ações Educativas:** formulário com 27 campos em 4 seções, cards/lista, exportação DOCX
+- **Trilhas de Aprendizagem:** vinculação a ações, carga horária automática
+- **Planos de Ensino:** wizard multi-etapas, geração DOCX a partir de template
+- **Moderação:** fila de aprovações para gestores; histórico de decisões
+- **Importação XLSX:** upload da matriz e ações via planilha
+- **Dashboard:** KPIs + 5 gráficos Chart.js (eixo, complexidade, categoria, cargo, top unidades)
+
+## Refator em andamento
+
+`frontend/src/legacy.js` ainda concentra ~5400 linhas (renderers das páginas). Próxima fase
+quebra em `src/pages/*.js` e elimina os `onclick="…"` inline em favor de `addEventListener`.

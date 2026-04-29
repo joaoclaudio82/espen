@@ -1,55 +1,93 @@
 # Backend FastAPI + PostgreSQL
 
-## 1) Subir PostgreSQL
+## Estrutura
 
-```bash
-docker compose up -d postgres
+```
+backend/
+├── app/
+│   ├── core/         # config, security (PBKDF2 + JWT), CPF, middleware HTTPS
+│   ├── db/           # session SQLAlchemy
+│   ├── models/       # User, Storage (JSONB), Relations
+│   ├── schemas/      # Pydantic — split por agregado
+│   ├── repositories/ # Acesso a dados
+│   ├── services/     # Regra de negócio (users, seed)
+│   ├── api/v1/       # Routers HTTP finos
+│   └── main.py
+├── alembic/          # Migrations versionadas
+├── tests/            # pytest
+├── pyproject.toml    # Deps + ruff + pytest config
+└── requirements.txt  # Compat
 ```
 
-## 2) Configurar ambiente Python
+## Setup
 
 ```bash
 cd backend
 python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-copy .env.example .env
-```
+source .venv/bin/activate          # Windows: .\.venv\Scripts\Activate.ps1
+pip install -e .[dev]
+cp .env.example .env
 
-## 3) Aplicar migração inicial (opcional)
+# Sobe Postgres na porta 5433:
+docker compose -f ../docker-compose.yml up -d postgres
 
-```bash
-python -m scripts.run_sql_migration
-```
+# Aplica migrations:
+alembic upgrade head
 
-## 4) Rodar API
-
-```bash
+# Sobe API:
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8001
 ```
 
-### Railway / proxy reverso
+## Railway / proxy reverso
 
-Para `X-Forwarded-Proto` / `X-Forwarded-Host` funcionarem (redirecionamento HTTP→HTTPS e HSTS na API), suba o Uvicorn com:
+Para `X-Forwarded-Proto`/`X-Forwarded-Host` funcionarem (redirecionamento HTTP→HTTPS e HSTS):
 
 ```bash
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips='*'
 ```
 
-Com `RAILWAY_ENVIRONMENT` definido (padrão no Railway) ou `FORCE_HTTPS=true`, o middleware de HTTPS é ativado. Veja `.env.example`.
+Com `RAILWAY_ENVIRONMENT` definido ou `FORCE_HTTPS=true`, o middleware é ativado.
 
-Obs.: o `docker-compose.yml` deste projeto publica o PostgreSQL na porta `5433`.
+## Migrations
+
+```bash
+# Cria nova revisão a partir do diff dos modelos:
+alembic revision --autogenerate -m "descricao da mudanca"
+
+# Aplica:
+alembic upgrade head
+
+# Reverte uma revisão:
+alembic downgrade -1
+```
+
+## Testes
+
+```bash
+pytest
+```
+
+Suite mínima cobre validação de CPF e ciclo PBKDF2/JWT.
 
 ## Endpoints principais
 
-- `POST /api/auth/login`
-- `POST /api/auth/register`
-- `GET /api/auth/me`
-- `GET /api/users` (admin)
-- `POST /api/users` (admin)
-- `PUT /api/users/{id}` (admin)
-- `PATCH /api/users/{id}/toggle` (admin)
-- `POST /api/users/change-password`
-- `GET /api/storage/{key}` (`espen_matriz`, `espen_acoes`, `espen_trilhas`, `espen_pdi`)
-- `PUT /api/storage/{key}` (admin)
-- `DELETE /api/storage/{key}` (admin)
+| Método | Rota | Auth | Função |
+|---|---|---|---|
+| POST | `/api/auth/login` | público | Login com CPF + senha (SHA-256 hex) → JWT |
+| POST | `/api/auth/register` | público | Cadastro inativo aguardando aprovação |
+| GET  | `/api/auth/me` | usuário | Dados do usuário logado |
+| GET  | `/api/users` | admin | Lista todos os usuários |
+| GET  | `/api/users/directory` | usuário | Diretório mínimo (id/nome/cargo/acesso) |
+| POST | `/api/users` | admin | Cria usuário ativo |
+| PUT  | `/api/users/{id}` | admin | Atualiza usuário |
+| PATCH| `/api/users/{id}/toggle` | admin | Ativa/desativa |
+| POST | `/api/users/change-password` | usuário | Troca a própria senha |
+| GET  | `/api/storage/{key}` | usuário | Lista itens (filtra moderação por solicitante) |
+| PUT  | `/api/storage/{key}` | admin (gestor em dashboard/moderacao) | Substitui coleção |
+| DELETE | `/api/storage/{key}` | admin | Limpa coleção |
+| POST | `/api/storage/espen_moderacao/append` | qualquer | Enfileira solicitação atomicamente |
+| GET/POST/PUT/DELETE | `/api/{matriz,acoes,trilhas,pdi}` | admin (writes), usuário (reads) | CRUD por agregado |
+
+Chaves válidas para `/api/storage/{key}`:
+`espen_matriz`, `espen_acoes`, `espen_trilhas`, `espen_pdi`, `espen_dashboard`,
+`espen_moderacao`, `espen_moderacao_historico`.

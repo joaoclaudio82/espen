@@ -3,15 +3,16 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .config import settings
-from .database import Base, SessionLocal, engine
-from .middleware_https import ForceHTTPSMiddleware
-from .routers import acoes, auth, matriz, pdi, storage, trilhas, users
-from .seed import ensure_admin_user, upgrade_default_admin_password_wire
+from .api.v1 import api_router
+from .core.config import settings
+from .core.middleware_https import ForceHTTPSMiddleware
+from .db.session import Base, SessionLocal, engine
+from .services.seed import ensure_admin_user, upgrade_default_admin_password_wire
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    # Cria tabelas que ainda não existem; migrations versionadas via Alembic.
     Base.metadata.create_all(bind=engine)
     with SessionLocal() as db:
         ensure_admin_user(db)
@@ -28,16 +29,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-# Registrado por último = executa primeiro na requisição (redireciona antes do restante).
+# Registrado por último = executa primeiro (redireciona antes do restante).
 app.add_middleware(ForceHTTPSMiddleware)
 
-app.include_router(auth.router)
-app.include_router(users.router)
-app.include_router(storage.router)
-app.include_router(matriz.router)
-app.include_router(acoes.router)
-app.include_router(trilhas.router)
-app.include_router(pdi.router)
+app.include_router(api_router)
 
 
 @app.get("/api/health")
