@@ -62,6 +62,7 @@ import './pages/configuracoes.js';
 import './pages/usuarios.js';
 import './pages/trilhas.js';
 import './pages/dashboard.js';
+import './pages/matriz.js';
 
 import './legacy.js';
 
