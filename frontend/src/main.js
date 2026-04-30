@@ -60,6 +60,7 @@ window.XLSX = XLSX;
 import './pages/sobre.js';
 import './pages/configuracoes.js';
 import './pages/usuarios.js';
+import './pages/trilhas.js';
 
 import './legacy.js';
 
