@@ -19,6 +19,13 @@ import {
 import { sha256HexUtf8 } from './auth/crypto.js';
 import { maskCPF, validateCPF } from './auth/cpf.js';
 import {
+  isAdminUser,
+  isGestorUser,
+  isSomenteLeitura,
+  podeEditarDireto,
+  usaFilaModeracao,
+} from './auth/roles.js';
+import {
   doLogin,
   doLogout,
   doRegister,
@@ -48,6 +55,7 @@ import {
   moderacaoPdiBlockTable,
   normalizeModeracaoPayload,
   pdiModeracaoLabelForPath,
+  pushFilaModeracao,
 } from './shared/moderacao.js';
 import { showToast } from './shared/toast.js';
 import {
@@ -99,59 +107,8 @@ Object.defineProperty(globalThis, 'currentUser', {
 // AUTH
 // ================================================================
 
-function isAdminUser() {
-  return currentUser && currentUser.acesso === 'Administrador';
-}
-function isGestorUser() {
-  return currentUser && currentUser.acesso === 'Gestor';
-}
-/** Leitura apenas: perfil Usuário ou Visitante (não gestor nem admin). */
-function isSomenteLeitura() {
-  if (!currentUser) return true;
-  const a = currentUser.acesso;
-  return a === 'Usuário' || a === 'Visitante';
-}
-/** Alterações aplicadas direto (sem fila): só administrador. */
-function podeEditarDireto() {
-  return isAdminUser();
-}
-/**
- * Tudo que não é administrador (e pode editar) passa pela fila de aprovação —
- * matriz, ações educativas (incluir, editar, excluir), trilhas e planos.
- * Hoje isso corresponde ao perfil Gestor; outros perfis com edição no futuro herdam a mesma regra.
- */
-function usaFilaModeracao() {
-  if (isSomenteLeitura()) return false;
-  if (isAdminUser()) return false;
-  return true;
-}
-
-function pushFilaModeracao(tipo, payload) {
-  const newItem = {
-    id: genId(),
-    tipo,
-    payload,
-    solicitante_id: currentUser.id,
-    solicitante_nome: currentUser.nome,
-    criado_em: new Date().toISOString(),
-  };
-  // O update dos badges precisa rodar SÓ depois do POST/PUT settler — se rodar
-  // junto, o refetch dentro do badge update pode chegar ao backend antes da
-  // gravação commitar e ler estado antigo (count desatualizado).
-  const refreshBadges = () => {
-    if (typeof updateModeracaoNavBadge === 'function') updateModeracaoNavBadge();
-    if (typeof updateGestorPendenciasNavBadge === 'function') updateGestorPendenciasNavBadge();
-  };
-  if (getToken() && !isAdminUser() && !isSomenteLeitura()) {
-    appendModeracaoItem(newItem)
-      .catch((e) => console.warn('Falha ao enfileirar via API (append):', e && e.message ? e.message : e))
-      .finally(refreshBadges);
-    return;
-  }
-  const q = getStorage(STORAGE_KEYS.moderacao) || [];
-  q.push(newItem);
-  setStorage(STORAGE_KEYS.moderacao, q).finally(refreshBadges);
-}
+// Role helpers (isAdminUser etc.) → src/auth/roles.js
+// pushFilaModeracao → src/shared/moderacao.js
 
 
 

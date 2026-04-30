@@ -11,9 +11,53 @@
  * `buildModeracaoDetalheGenericoHtml` ficam em `legacy.js` enquanto a página de
  * PDI ainda não foi extraída — quando for, eles vêm para cá ou para `pages/pdi.js`.
  */
-import { STORAGE_KEYS, getStorage } from '../api/storage.js';
+import { getToken } from '../api/client.js';
+import { STORAGE_KEYS, appendModeracaoItem, getStorage, setStorage } from '../api/storage.js';
+import { isAdminUser, isSomenteLeitura } from '../auth/roles.js';
+import { getCurrentUser } from '../auth/session.js';
 import { escapeHtmlStr } from './escape.js';
-import { idEquals } from './format.js';
+import { genId, idEquals } from './format.js';
+
+// ── Submissão de pedidos para a fila ─────────────────────────────────────────
+
+/**
+ * Enfileira uma alteração para aprovação do administrador.
+ *
+ * Para gestores autenticados: usa POST /storage/espen_moderacao/append (atômico,
+ * evita o GET-PUT-de-coleção-inteira que sobrescreveria itens concorrentes).
+ * Para usuários sem token / fluxo legado: cai no `setStorage` da fila local.
+ *
+ * Os badges da sidebar (`updateModeracaoNavBadge`/`updateGestorPendenciasNavBadge`)
+ * são atualizados APÓS o POST/PUT settler — caso contrário o `refetchKey` interno
+ * do badge pode chegar ao backend antes da gravação commitar e mostrar count
+ * desatualizado. Os updaters ainda vivem em `legacy.js`/`pages/moderacao.js`
+ * (transição) e são acessados via `globalThis`.
+ */
+export function pushFilaModeracao(tipo, payload) {
+  const currentUser = getCurrentUser();
+  if (!currentUser) return;
+  const newItem = {
+    id: genId(),
+    tipo,
+    payload,
+    solicitante_id: currentUser.id,
+    solicitante_nome: currentUser.nome,
+    criado_em: new Date().toISOString(),
+  };
+  const refreshBadges = () => {
+    globalThis.updateModeracaoNavBadge?.();
+    globalThis.updateGestorPendenciasNavBadge?.();
+  };
+  if (getToken() && !isAdminUser() && !isSomenteLeitura()) {
+    appendModeracaoItem(newItem)
+      .catch((e) => console.warn('Falha ao enfileirar via API (append):', e && e.message ? e.message : e))
+      .finally(refreshBadges);
+    return;
+  }
+  const q = getStorage(STORAGE_KEYS.moderacao) || [];
+  q.push(newItem);
+  setStorage(STORAGE_KEYS.moderacao, q).finally(refreshBadges);
+}
 
 // ── Tipo / resumo ────────────────────────────────────────────────────────────
 
