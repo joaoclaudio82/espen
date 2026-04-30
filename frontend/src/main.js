@@ -53,6 +53,14 @@ window.XLSX = XLSX;
 
 // Import estático: legacy.js executa no momento do parse do módulo, registrando
 // suas ~50 funções em globalThis via o footer `Object.assign(globalThis, {...})`.
+//
+// Páginas extraídas — cada módulo registra seu(s) renderer(s) em globalThis.
+// (Importadas ANTES de legacy.js para que o `Object.assign(globalThis,…)` no
+// rodapé do legacy não tente reexportar funções que não existem mais lá.)
+import './pages/sobre.js';
+import './pages/configuracoes.js';
+import './pages/usuarios.js';
+
 import './legacy.js';
 
 function enterApp() {

@@ -397,7 +397,7 @@ window.aprovarModeracaoItem = async function(mid) {
   showToast('Solicitação aplicada nos dados do sistema.', 'success');
   updateModeracaoNavBadge();
   if (currentPage === 'moderacao' && typeof renderModeracao === 'function') renderModeracao();
-  else if (typeof renderUsuarios === 'function') renderUsuarios();
+  else if (typeof globalThis.renderUsuarios === 'function') globalThis.renderUsuarios();
 };
 
 window.rejeitarModeracaoItem = async function(mid) {
@@ -428,7 +428,7 @@ window.rejeitarModeracaoItem = async function(mid) {
   showToast('Solicitação recusada.', 'info');
   updateModeracaoNavBadge();
   if (currentPage === 'moderacao' && typeof renderModeracao === 'function') renderModeracao();
-  else if (typeof renderUsuarios === 'function') renderUsuarios();
+  else if (typeof globalThis.renderUsuarios === 'function') globalThis.renderUsuarios();
 };
 
 
@@ -3953,299 +3953,6 @@ async function renderPendenciasGestorModeracao() {
 // ================================================================
 // GESTÃO DE USUÁRIOS
 // ================================================================
-function renderUsuarios() {
-  if (currentUser.acesso !== 'Administrador') {
-    document.getElementById('page-content').innerHTML = `<div class="empty-state"><i class="fas fa-lock"></i><h3>Acesso Restrito</h3><p>Apenas administradores podem acessar esta área.</p></div>`;
-    return;
-  }
-  document.getElementById('topbar-actions').innerHTML = `
-    <button class="btn btn-gold btn-sm" onclick="openUserForm()"><i class="fas fa-user-plus"></i> <span class="btn-label">Novo Usuário</span></button>
-  `;
-  const users = getStorage(STORAGE_KEYS.users) || [];
-  const acessoColors = { Administrador: 'blue', Gestor: 'gold', Usuário: 'green', usuário: 'green', Visitante: 'gray' };
-
-  document.getElementById('page-content').innerHTML = `
-    <div class="section-header">
-      <div>
-        <div class="section-title">Gestão de Usuários</div>
-        <div class="section-sub">${users.length} usuários cadastrados no sistema</div>
-      </div>
-    </div>
-    <div class="table-card">
-      <div class="table-responsive">
-        <table>
-          <thead>
-            <tr>
-              <th>Nome</th>
-              <th class="hide-mobile">CPF</th>
-              <th class="hide-mobile">E-mail</th>
-              <th class="hide-mobile">Cargo</th>
-              <th>Acesso</th>
-              <th class="hide-mobile">Cadastro</th>
-              <th>Status</th>
-              <th style="width:90px;">Ações</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${users.map(u => {
-              const ac = u.acesso || 'Usuário';
-              const cc = acessoColors[ac] || 'gray';
-              return `
-                <tr>
-                  <td>
-                    <div style="display:flex;align-items:center;gap:10px;">
-                      <div class="user-avatar" style="width:32px;height:32px;font-size:11px;flex-shrink:0;">${u.nome.substring(0,2).toUpperCase()}</div>
-                      <div>
-                        <div class="fw-600" style="font-size:13px;">${u.nome}</div>
-                        <div style="font-size:11px;color:var(--gray-500);display:none;" class="hide-desktop">${u.cpf}</div>
-                      </div>
-                    </div>
-                  </td>
-                  <td class="hide-mobile" style="font-size:12px;">${u.cpf}</td>
-                  <td class="hide-mobile" style="font-size:12px;">${u.email}</td>
-                  <td class="hide-mobile" style="font-size:12px;max-width:180px;" title="${u.cargo||'—'}">${(u.cargo||'—').substring(0,30)}${u.cargo&&u.cargo.length>30?'…':''}</td>
-                  <td><span class="badge badge-${cc}">${ac}</span></td>
-                  <td class="hide-mobile" style="font-size:12px;">${u.data_registro ? new Date(u.data_registro).toLocaleDateString('pt-BR') : '—'}</td>
-                  <td><span class="badge badge-${u.ativo!==false?'green':'red'}">${u.ativo!==false?'Ativo':'Pendente ou inativo'}</span></td>
-                  <td>
-                    <div style="display:flex;gap:4px;">
-                      <button class="btn btn-secondary btn-sm" onclick="editUser('${u.id}')" title="Editar"><i class="fas fa-edit"></i></button>
-                      ${u.id !== currentUser.id ? `<button class="btn ${u.ativo!==false?'btn-danger':'btn-success'} btn-sm" onclick="toggleUser('${u.id}')" title="${u.ativo!==false?'Desativar':'Ativar'}"><i class="fas fa-${u.ativo!==false?'ban':'check'}"></i></button>` : ''}
-                    </div>
-                  </td>
-                </tr>
-              `;
-            }).join('')}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  `;
-}
-
-function openUserForm(id = null) {
-  const users = getStorage(STORAGE_KEYS.users) || [];
-  const u = id ? (users.find(x => x.id === id) || {}) : {};
-  const body = `
-    <div class="form-grid">
-      <div class="form-group"><label>CPF *</label><input type="text" id="uf-cpf" value="${u.cpf||''}" maxlength="14" oninput="maskCPF(this)" ${id?'readonly':''}></div>
-      <div class="form-group"><label>Nome Completo *</label><input type="text" id="uf-nome" value="${u.nome||''}"></div>
-      <div class="form-group"><label>E-mail *</label><input type="email" id="uf-email" value="${u.email||''}"></div>
-      <div class="form-group">
-        <label>Cargo</label>
-        <select id="uf-cargo">
-          <option value="">Selecione...</option>
-          ${['Policial Penal','Especialista Federal em Assistência à Execução Penal','Técnico Federal de Apoio à Execução Penal','Docente','Outro'].map(c=>`<option value="${c}" ${u.cargo===c?'selected':''}>${c}</option>`).join('')}
-        </select>
-      </div>
-      <div class="form-group">
-        <label>Nível de Acesso</label>
-        <select id="uf-acesso">
-          ${['Usuário','Gestor','Administrador'].map(a=>`<option value="${a}" ${(u.acesso||'Usuário')===a?'selected':''}>${a}</option>`).join('')}
-        </select>
-      </div>
-      ${!id ? `
-        <div class="form-group"><label>Senha *</label><input type="password" id="uf-senha" placeholder="Mín. 6 caracteres"></div>
-        <div class="form-group"><label>Confirmar Senha *</label><input type="password" id="uf-confirma"></div>
-      ` : '<div class="form-group"><label>Nova Senha (deixe em branco para manter)</label><input type="password" id="uf-senha" placeholder="Nova senha..."></div>'}
-    </div>
-  `;
-  const footer = `
-    <button class="btn btn-secondary" onclick="closeModalBtn()">Cancelar</button>
-    <button class="btn btn-primary" onclick="void saveUser();"><i class="fas fa-save"></i> ${id?'Salvar':'Cadastrar'}</button>
-  `;
-  openModal(id ? 'Editar Usuário' : 'Novo Usuário', `<input type="hidden" id="uf-row-id" value="${id||''}">${body}`, footer, false);
-}
-
-function editUser(id) { openUserForm(id); }
-
-async function saveUser() {
-  const id = (document.getElementById('uf-row-id') && document.getElementById('uf-row-id').value) || '';
-  const cpf = document.getElementById('uf-cpf').value.trim();
-  const nome = document.getElementById('uf-nome').value.trim();
-  const email = document.getElementById('uf-email').value.trim();
-  const cargo = document.getElementById('uf-cargo').value;
-  const niveis = ['Usuário', 'Gestor', 'Administrador'];
-  let acesso = (document.getElementById('uf-acesso') && document.getElementById('uf-acesso').value || '').trim();
-  if (!niveis.includes(acesso)) acesso = 'Usuário';
-  const senha = document.getElementById('uf-senha').value;
-
-  if (!cpf || !nome || !email) { showToast('Preencha os campos obrigatórios', 'warning'); return; }
-  if (!id && !senha) { showToast('Informe a senha', 'warning'); return; }
-  if (!id) {
-    const confirma = document.getElementById('uf-confirma').value;
-    if (senha !== confirma) { showToast('As senhas não coincidem', 'error'); return; }
-    if (!validateCPF(cpf)) { showToast('CPF inválido', 'error'); return; }
-  }
-
-  try {
-    if (id) {
-      const body = { nome, email, cargo, acesso };
-      if (senha) body.senha = await sha256HexUtf8(senha);
-      await apiFetch('PUT', `/users/${id}`, body);
-    } else {
-      const senhaWire = await sha256HexUtf8(senha);
-      await apiFetch('POST', '/users', { cpf, nome, email, cargo, acesso, senha: senhaWire });
-    }
-    await invalidateUsersCache();
-    closeModalBtn();
-    showToast(id ? 'Usuário atualizado!' : 'Usuário cadastrado!', 'success');
-    renderUsuarios();
-  } catch (err) {
-    showToast(err.message || 'Erro ao salvar usuário', 'error');
-  }
-}
-
-async function toggleUser(id) {
-  try {
-    const updated = await apiFetch('PATCH', `/users/${id}/toggle`);
-    await invalidateUsersCache();
-    showToast(`Usuário ${updated.ativo ? 'ativado' : 'desativado'}.`, 'success');
-    renderUsuarios();
-  } catch (err) {
-    showToast(err.message || 'Erro ao alterar status do usuário', 'error');
-  }
-}
-
-// ================================================================
-// SOBRE (institucional + logos)
-// ================================================================
-function renderSobre() {
-  document.getElementById('topbar-actions').innerHTML = '';
-  const logosInstitucionais = [
-    { file: 'Governo Federal.png', label: 'Governo Federal' },
-    { file: 'Senappen.png', label: 'SENAPPEN' },
-    { file: 'UFSC.png', label: 'Universidade Federal de Santa Catarina (UFSC)' },
-    { file: 'EGC.png', label: 'EGC' },
-    { file: 'ENGIN.png', label: 'ENGIN' },
-  ];
-  const logosHtml = logosInstitucionais.map(({ file, label }) => {
-    const src = 'logos/' + encodeURIComponent(file);
-    const alt = escapeHtmlStr(label);
-    return `<div class="sobre-logo-cell" title="${alt}"><img src="${src}" alt="${alt}" loading="lazy"></div>`;
-  }).join('');
-
-  document.getElementById('page-content').innerHTML = `
-    <div class="section-header">
-      <div>
-        <div class="section-title">Sobre</div>
-        <div class="section-sub">Informações institucionais e apoio ao desenvolvimento do sistema ESPEN</div>
-      </div>
-    </div>
-
-    <div class="table-card" style="margin-bottom:20px;">
-      <div style="padding:16px 20px;border-bottom:1px solid var(--gray-100);">
-        <div class="section-title" style="font-size:16px;"><i class="fas fa-info-circle" style="color:var(--success);margin-right:8px;"></i>Sobre o sistema</div>
-      </div>
-      <div style="padding:20px 24px;">
-        <div class="detail-grid">
-          <div class="detail-field"><div class="detail-label">Sistema</div><div class="detail-value fw-600">ESPEN — Sistema de Gestão por Competências</div></div>
-          <div class="detail-field"><div class="detail-label">Instituição</div><div class="detail-value">Escola Nacional de Serviços Penais (ESPEN) / SENAPPEN</div></div>
-          <div class="detail-field"><div class="detail-label">Versão</div><div class="detail-value">1.0.0 — MCN 2026</div></div>
-          <div class="detail-field"><div class="detail-label">Desenvolvimento</div><div class="detail-value">2026</div></div>
-        </div>
-      </div>
-    </div>
-
-    <div class="table-card">
-      <div style="padding:16px 20px;border-bottom:1px solid var(--gray-100);">
-        <div class="section-title" style="font-size:16px;"><i class="fas fa-handshake" style="color:var(--navy);margin-right:8px;"></i>Realização e parcerias</div>
-        <div class="section-sub">Identidades visuais das instituições vinculadas ao projeto</div>
-      </div>
-      <div style="padding:24px;">
-        <div class="sobre-logos-grid">${logosHtml}</div>
-      </div>
-    </div>
-  `;
-}
-
-// ================================================================
-// CONFIGURAÇÕES
-// ================================================================
-function renderConfiguracoes() {
-  document.getElementById('page-content').innerHTML = `
-    <div class="section-header">
-      <div><div class="section-title">Configurações</div><div class="section-sub">Gerencie as configurações do sistema</div></div>
-    </div>
-    <div class="config-grid-2" style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
-      <div class="card">
-        <div class="card-header"><h3><i class="fas fa-user" style="color:var(--navy);margin-right:8px;"></i>Meu Perfil</h3></div>
-        <div class="card-body">
-          <div class="detail-field"><div class="detail-label">Nome</div><div class="detail-value fw-600">${currentUser.nome}</div></div>
-          <div class="detail-field"><div class="detail-label">CPF</div><div class="detail-value">${currentUser.cpf}</div></div>
-          <div class="detail-field"><div class="detail-label">E-mail</div><div class="detail-value">${currentUser.email}</div></div>
-          <div class="detail-field"><div class="detail-label">Cargo</div><div class="detail-value">${currentUser.cargo||'—'}</div></div>
-          <div class="detail-field"><div class="detail-label">Nível de Acesso</div><div class="detail-value"><span class="badge badge-blue">${currentUser.acesso}</span></div></div>
-          <div class="divider"></div>
-          <button class="btn btn-primary btn-sm" onclick="openChangePassword()"><i class="fas fa-key"></i> Alterar Senha</button>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-header"><h3><i class="fas fa-database" style="color:var(--gold-dark);margin-right:8px;"></i>Dados do Sistema</h3></div>
-        <div class="card-body">
-          <div class="detail-field"><div class="detail-label">Competências na Matriz</div><div class="detail-value fw-600">${(getStorage(STORAGE_KEYS.matriz)||[]).length} registros</div></div>
-          <div class="detail-field"><div class="detail-label">Ações Educativas</div><div class="detail-value fw-600">${(getStorage(STORAGE_KEYS.acoes)||[]).length} registros</div></div>
-          <div class="detail-field"><div class="detail-label">Trilhas de Aprendizagem</div><div class="detail-value fw-600">${(getStorage(STORAGE_KEYS.trilhas)||[]).length} registros</div></div>
-          <div class="detail-field"><div class="detail-label">Planos de Ensino</div><div class="detail-value fw-600">${(getStorage(STORAGE_KEYS.pdi)||[]).length} registros</div></div>
-          <div class="detail-field"><div class="detail-label">Usuários</div><div class="detail-value fw-600">${(getStorage(STORAGE_KEYS.users)||[]).length} registros</div></div>
-          <div class="divider"></div>
-          ${currentUser.acesso === 'Administrador' ? `<button class="btn btn-danger btn-sm" onclick="resetSystem()"><i class="fas fa-trash-can"></i> Reinicializar Sistema</button>` : ''}
-        </div>
-      </div>
-    </div>
-  `;
-}
-
-function openChangePassword() {
-  const body = `
-    <div class="form-group"><label>Senha Atual *</label><input type="password" id="cp-atual" placeholder="Sua senha atual"></div>
-    <div class="form-group"><label>Nova Senha *</label><input type="password" id="cp-nova" placeholder="Mínimo 6 caracteres"></div>
-    <div class="form-group"><label>Confirmar Nova Senha *</label><input type="password" id="cp-confirma" placeholder="Repita a nova senha"></div>
-  `;
-  openModal('Alterar Senha', body, `
-    <button class="btn btn-secondary" onclick="closeModalBtn()">Cancelar</button>
-    <button class="btn btn-primary" onclick="void changePassword();"><i class="fas fa-key"></i> Alterar Senha</button>
-  `);
-}
-
-async function changePassword() {
-  const atual = document.getElementById('cp-atual').value;
-  const nova = document.getElementById('cp-nova').value;
-  const confirma = document.getElementById('cp-confirma').value;
-  if (!atual || !nova || !confirma) { showToast('Preencha todos os campos', 'warning'); return; }
-  if (nova.length < 6) { showToast('Nova senha deve ter no mínimo 6 caracteres', 'warning'); return; }
-  if (nova !== confirma) { showToast('As senhas não coincidem', 'error'); return; }
-  try {
-    const senhaAtualWire = await sha256HexUtf8(atual);
-    const novaSenhaWire = await sha256HexUtf8(nova);
-    await apiFetch('POST', '/users/change-password', { senha_atual: senhaAtualWire, nova_senha: novaSenhaWire });
-    closeModalBtn();
-    showToast('Senha alterada com sucesso!', 'success');
-  } catch (err) {
-    showToast(err.message || 'Erro ao alterar senha', 'error');
-  }
-}
-
-async function resetSystem() {
-  if (!confirm('⚠️ ATENÇÃO: Esta ação irá apagar TODOS os dados do sistema exceto os usuários. Deseja continuar?')) return;
-  if (!confirm('Tem certeza? Esta ação é IRREVERSÍVEL!')) return;
-  try {
-    await Promise.all([
-      deleteStorage(STORAGE_KEYS.matriz),
-      deleteStorage(STORAGE_KEYS.acoes),
-      deleteStorage(STORAGE_KEYS.trilhas),
-      deleteStorage(STORAGE_KEYS.pdi),
-      deleteStorage(STORAGE_KEYS.moderacao),
-      deleteStorage(STORAGE_KEYS.moderacao_historico),
-    ]);
-  } catch (err) {
-    showToast(err.message || 'Erro ao reinicializar no banco', 'error');
-    return;
-  }
-  if (typeof updateModeracaoNavBadge === 'function') updateModeracaoNavBadge();
-  showToast('Sistema reinicializado!', 'success');
-  renderConfiguracoes();
-}
 
 // ================================================================
 // EXPORTAÇÃO DOCX — HELPERS
@@ -5071,9 +4778,9 @@ Object.assign(globalThis, {
   validateRegisterCPF, maskCPF,
   // Renderers + sub-renderers (filtros/paginação chamam só a porção tabela/grid)
   renderDashboard, renderMatriz, renderMatrizTable, renderAcoes, renderAcoesGrid,
-  renderTrilhas, renderPDI, renderUsuarios, renderModeracao,
+  renderTrilhas, renderPDI, renderModeracao,
   renderModeracaoHistoricoTable, renderGestorPendenciasHistoricoTable,
-  renderPendenciasGestorModeracao, renderSobre, renderConfiguracoes,
+  renderPendenciasGestorModeracao,
   // Matriz
   editMatriz, deleteMatriz, saveMatriz, openMatrizForm, viewMatrizDetail,
   exportMatrizCSV, exportMatrizDOCX, resetMatrizFilters,
@@ -5085,14 +4792,12 @@ Object.assign(globalThis, {
   // PDI
   editPDI, deletePDI, openPDIForm, savePDIFromWizard,
   pdiContinuarDoPasso1, pdiOnPeriodoDateChange, exportPDIDOCX,
-  // Usuários
-  editUser, openUserForm, saveUser, toggleUser, openChangePassword, changePassword,
   // Moderação
   aprovarModeracaoItem, rejeitarModeracaoItem,
   // Dashboard filter
   dashboardMarcarTodasAcoes, dashboardDesmarcarTodasAcoes,
   // Manutenção
-  resetSystem, importExcelData,
+  importExcelData,
   // Bootstrap helpers (consumidos pelo `main.js`)
   updateModeracaoNavBadge, updateGestorPendenciasNavBadge, updateSidebarUser,
 });
