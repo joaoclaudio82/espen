@@ -64,6 +64,7 @@ import './pages/trilhas.js';
 import './pages/dashboard.js';
 import './pages/matriz.js';
 import './pages/acoes.js';
+import './pages/pdi.js';
 
 import './legacy.js';
 
