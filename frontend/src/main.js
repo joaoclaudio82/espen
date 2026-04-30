@@ -66,6 +66,7 @@ import './pages/matriz.js';
 import './pages/acoes.js';
 import './pages/pdi.js';
 import './pages/moderacao.js';
+import './exports/docx.js';
 
 import './legacy.js';
 

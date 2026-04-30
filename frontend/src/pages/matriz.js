@@ -125,7 +125,7 @@ export function resetMatrizFilters() {
   renderMatriz();
 }
 
-function getFilteredMatriz() {
+export function getFilteredMatriz() {
   let data = getStorage(STORAGE_KEYS.matriz) || [];
   if (matrizFilters.mostrarArquivados) {
     data = data.filter((r) => isMatrizRegistroArquivado(r));
