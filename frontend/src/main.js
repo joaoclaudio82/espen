@@ -67,6 +67,7 @@ import './pages/acoes.js';
 import './pages/pdi.js';
 import './pages/moderacao.js';
 import './exports/docx.js';
+import './import/excel.js';
 
 import './legacy.js';
 
