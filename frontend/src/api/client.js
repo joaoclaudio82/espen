@@ -15,7 +15,7 @@ function defaultApiBase() {
   }
   if (typeof window === 'undefined') return '/api';
   const host = window.location.hostname;
-  const localHosts = ['127.0.0.1', 'localhost', '0.0.0.0', ''];
+  const localHosts = ['127.0.0.1', 'localhost', '0.0.0.0', '::1', ''];
   if (localHosts.includes(host)) return 'http://127.0.0.1:8001/api';
   return `${window.location.origin}/api`;
 }
@@ -63,7 +63,20 @@ export async function apiFetch(method, path, body = null, { useAuth = true } = {
     if (token) headers.Authorization = `Bearer ${token}`;
   }
 
-  const response = await fetch(`${API_BASE}${path}`, init);
+  let response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, init);
+  } catch (e) {
+    const raw = (e && e.message) || String(e);
+    const isNetwork =
+      /failed to fetch|networkerror|load failed|network request failed/i.test(raw);
+    const detail = isNetwork
+      ? 'Sem ligação à API. Em desenvolvimento, inicia o backend (uvicorn em http://127.0.0.1:8001), o Postgres, e abre o site em http://127.0.0.1:5173 ou localhost — não use o IP da máquina na barra de endereço.'
+      : raw;
+    const err = new Error(detail);
+    err.cause = e;
+    throw err;
+  }
 
   if (!response.ok) {
     let detail = `Erro na API (${response.status})`;

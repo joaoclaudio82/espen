@@ -110,6 +110,17 @@ function scorePotentialAcoesHeaderRow(cellValues) {
   return score;
 }
 
+/** Planilha tipo cadastro de Ações (Estado, ID AE, Carga Horária…) — não é o formato MCN da Matriz. */
+function headerRowLooksLikeAcoesCadastro(headerCells) {
+  const norm = (headerCells || []).map((c) => normalizeExcelHeader(c)).filter(Boolean);
+  if (norm.length < 4) return false;
+  const hasIdAe = norm.some((h) => h.includes('id_ae'));
+  const hasEstado = norm.includes('estado');
+  const hasCarga = norm.some((h) => h.includes('carga_horaria') || h.includes('13_carga'));
+  const hasNomeAcao = norm.some((h) => h.includes('nome_da_acao'));
+  return hasIdAe && hasEstado && (hasCarga || hasNomeAcao);
+}
+
 function rowsFromAoA(aoa, headerRowIndex) {
   const headerCells = aoa[headerRowIndex] || [];
   const headers = headerCells.map((c) => normalizeExcelHeader(c));
@@ -169,6 +180,11 @@ function readExcelRows(file, moduleKey) {
             }
           }
           if (bestScore >= 5) headerIdx = best;
+        }
+
+        if (moduleKey === STORAGE_KEYS.matriz && headerRowLooksLikeAcoesCadastro(aoa[headerIdx] || [])) {
+          reject(new Error('WRONG_SHEET_ACOES'));
+          return;
         }
 
         const rows = rowsFromAoA(aoa, headerIdx);
@@ -499,6 +515,15 @@ function importExcelData(moduleKey) {
       if (moduleKey === STORAGE_KEYS.acoes && document.getElementById('acoes-grid')) globalThis.renderAcoesGrid?.();
       if (moduleKey === STORAGE_KEYS.trilhas && typeof globalThis.renderTrilhas === 'function') globalThis.renderTrilhas();
     } catch (err) {
+      if (err && err.message === 'WRONG_SHEET_ACOES') {
+        showToast(
+          'Esta planilha é o modelo de Ações Educativas (Estado, ID AE, Carga Horária, Nome da Ação…). ' +
+            'Importe-a em Ações Educativas → Importar Excel. ' +
+            'A Matriz de Referência MCN exige colunas Competência, Categoria, Cargo e Objetivo — use Exportar CSV na tela da matriz ou a planilha MCN oficial.',
+          'error'
+        );
+        return;
+      }
       showToast(`Falha na importação: ${err.message}`, 'error');
     }
   };
