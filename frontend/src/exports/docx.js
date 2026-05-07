@@ -16,6 +16,7 @@ import { pdiUsaTrilhaLegado } from '../shared/pdi-utils.js';
 import { showToast } from '../shared/toast.js';
 
 import { getFilteredMatriz } from '../pages/matriz.js';
+import { pdiListVisibleForCurrentUser } from '../pages/pdi.js';
 
 //  resolvido via getCurrentUser() — sem ler globalThis no nível de módulo.
 const currentUser = new Proxy({}, { get: (_, k) => { const u = getCurrentUser(); return u ? u[k] : undefined; } });
@@ -368,6 +369,11 @@ window.exportPlanoEnsinoFromTemplate = async function exportPlanoEnsinoFromTempl
       throw new Error(`Modelo não encontrado (${res.status}). Caminho esperado: templates/Modelo de Plano de ensino.docx`);
     }
     const buf = await res.arrayBuffer();
+    const sig = new Uint8Array(buf.slice(0, 2));
+    const isZipDocx = sig.length === 2 && sig[0] === 0x50 && sig[1] === 0x4b; // "PK"
+    if (!isZipDocx) {
+      throw new Error('Modelo institucional inválido (não é um .docx/zip válido).');
+    }
     const zip = new PizZip(buf);
     const docFile = zip.file('word/document.xml');
     if (!docFile) throw new Error('O modelo .docx não contém word/document.xml.');
@@ -384,7 +390,24 @@ window.exportPlanoEnsinoFromTemplate = async function exportPlanoEnsinoFromTempl
     showToast('Documento gerado a partir do modelo institucional.', 'success');
   } catch (e) {
     console.error(e);
-    showToast(e.message ? String(e.message) : 'Não foi possível gerar o documento.', 'error');
+    // Fallback resiliente: se o modelo não estiver disponível no ambiente,
+    // gera o DOCX pelo motor interno para não bloquear o usuário.
+    const msg = e && e.message ? String(e.message) : '';
+    const shouldFallback =
+      msg.includes('Modelo não encontrado')
+      || msg.includes('Modelo institucional inválido')
+      || msg.includes('word/document.xml')
+      || msg.includes('Failed to fetch')
+      || msg.includes('NetworkError')
+      || msg.includes("Can't find end of central directory");
+
+    if (shouldFallback) {
+      showToast('Modelo institucional indisponível. Gerando DOCX padrão do sistema…', 'warning');
+      await exportPDIDOCX(btn, opts);
+      return;
+    }
+
+    showToast(msg || 'Não foi possível gerar o documento.', 'error');
   } finally {
     resetBtn();
   }
